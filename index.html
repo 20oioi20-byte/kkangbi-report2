@@ -528,16 +528,35 @@ ${fieldDesc}
 
   let currentRecord = null, currentPrevRecord = null;
 
+  // 정확히 "전월"에 저장된 기록이 없으면, 가장 최근에 저장된 이전 기록을 찾아 전월값 기준으로 사용
+  async function findMostRecentPriorRecord(centerId, ym){
+    const list = await storageList(`rec__${centerId}__`); // updated_at/key 기준 내림차순 정렬됨
+    for(const item of list){
+      const itemYm = item.key.split('__').pop();
+      if(itemYm < ym) return { ym: itemYm, value: item.value };
+    }
+    return null;
+  }
+
   async function loadAndRenderTemplate(center){
     const ym = inputMonth.ym;
     $('in-period').textContent = `청구/보고 기간: ${periodText(center, ym)}`;
-    const pm = prevMonth(ym);
     currentRecord = await storageGet(`rec__${center.id}__${ym}`);
-    currentPrevRecord = await storageGet(`rec__${center.id}__${pm}`);
+    const exactPm = prevMonth(ym);
+    let prevSourceYm = null;
+    const exactPrev = await storageGet(`rec__${center.id}__${exactPm}`);
+    if(exactPrev){
+      currentPrevRecord = exactPrev; prevSourceYm = exactPm;
+    }else{
+      const found = await findMostRecentPriorRecord(center.id, ym);
+      currentPrevRecord = found ? found.value : null;
+      prevSourceYm = found ? found.ym : null;
+    }
     const st = $('in-status');
     if(currentRecord){ st.className='rt-status'; st.textContent = `${monthLabel(ym)} 기존 저장 기록을 불러왔습니다. (수정 후 다시 저장 가능)`; }
-    else if(currentPrevRecord){ st.className='rt-status'; st.textContent = `${monthLabel(pm)} 데이터를 전월값으로 자동 반영했습니다.`; }
-    else{ st.className='rt-status warn'; st.textContent = `${monthLabel(pm)} 저장된 전월 데이터가 없습니다. 처음이면 정상입니다.`; }
+    else if(currentPrevRecord && prevSourceYm===exactPm){ st.className='rt-status'; st.textContent = `${monthLabel(exactPm)} 데이터를 전월값으로 자동 반영했습니다.`; }
+    else if(currentPrevRecord){ st.className='rt-status'; st.textContent = `전월(${monthLabel(exactPm)}) 저장 기록이 없어, 가장 최근 저장된 ${monthLabel(prevSourceYm)} 데이터를 전월값으로 자동 반영했습니다. 필요하면 직접 수정하세요.`; }
+    else{ st.className='rt-status warn'; st.textContent = `이전에 저장된 데이터가 없습니다. 신규 작업이면 전월값 칸에 직접 입력해주세요.`; }
     $('btn-delete-record').style.display = currentRecord ? '' : 'none';
 
     if(center.type==='perf') renderPerfForm(center);
@@ -547,13 +566,14 @@ ${fieldDesc}
   // ---- 실적형(perf) 폼 ----
   function renderPerfForm(center){
     const form = $('tpl-form');
+    const monthNum = Number(inputMonth.ym.split('-')[1]);
     form.innerHTML = `
       <table class="rt-table" id="perf-table">
-        <thead><tr><th style="width:22%;">구분</th><th>전월 실적</th><th>당월 실적 (입력)</th><th>증감</th></tr></thead>
+        <thead><tr><th style="width:22%;">구분</th><th>전월 실적 (입력/수정 가능)</th><th>${monthNum}월 실적 (입력)</th><th>증감</th></tr></thead>
         <tbody>${PERF_METRICS.map(m=>`
           <tr data-id="${m.id}">
             <td class="rt-label">${m.label}</td>
-            <td class="perf-prev">-</td>
+            <td class="rt-num-input"><input type="number" step="any" class="perf-prev-input" data-id="${m.id}"></td>
             <td class="rt-num-input"><input type="number" step="any" class="perf-input" data-id="${m.id}"></td>
             <td class="perf-diff">-</td>
           </tr>`).join('')}</tbody>
@@ -561,7 +581,9 @@ ${fieldDesc}
     PERF_METRICS.forEach(m=>{
       const tr = document.querySelector(`#perf-table tr[data-id="${m.id}"]`);
       const prevVal = currentPrevRecord ? currentPrevRecord[m.id] : null;
-      tr.querySelector('.perf-prev').textContent = (prevVal!==null&&prevVal!==undefined) ? (m.decimals?fmt1(prevVal):fmt(prevVal))+m.unit : '-';
+      const prevInp = tr.querySelector('.perf-prev-input');
+      prevInp.value = (prevVal!==null && prevVal!==undefined) ? prevVal : '';
+      prevInp.addEventListener('input', ()=>updatePerfPreview(center));
       const inp = tr.querySelector('.perf-input');
       inp.value = currentRecord && currentRecord[m.id]!==undefined && currentRecord[m.id]!==null ? currentRecord[m.id] : '';
       inp.addEventListener('input', ()=>updatePerfPreview(center));
@@ -570,22 +592,24 @@ ${fieldDesc}
   }
   function updatePerfPreview(center){
     const ym = inputMonth.ym;
+    const monthNum = Number(ym.split('-')[1]);
     let rows = '';
     PERF_METRICS.forEach(m=>{
       const tr = document.querySelector(`#perf-table tr[data-id="${m.id}"]`);
       const cur = tr.querySelector('.perf-input').value;
       const curN = cur===''?null:Number(cur);
-      const prevN = currentPrevRecord ? currentPrevRecord[m.id] : null;
+      const prevRaw = tr.querySelector('.perf-prev-input').value;
+      const prevN = prevRaw===''?null:Number(prevRaw);
       let diffHtml = '-';
-      if(curN!==null && prevN!==null && prevN!==undefined){
+      if(curN!==null && prevN!==null){
         const diff = Math.round((curN-prevN)*10)/10;
         diffHtml = arrowSpan(diff, m.unit, m.decimals);
       }
       tr.querySelector('.perf-diff').innerHTML = diffHtml;
-      rows += `<tr><td class="rt-label">${m.label}</td><td>${(prevN!==null&&prevN!==undefined)?(m.decimals?fmt1(prevN):fmt(prevN))+m.unit:'-'}</td><td>${curN!==null?(m.decimals?fmt1(curN):fmt(curN))+m.unit:'-'}</td><td>${diffHtml}</td></tr>`;
+      rows += `<tr><td class="rt-label">${m.label}</td><td>${prevN!==null?(m.decimals?fmt1(prevN):fmt(prevN))+m.unit:'-'}</td><td>${curN!==null?(m.decimals?fmt1(curN):fmt(curN))+m.unit:'-'}</td><td>${diffHtml}</td></tr>`;
     });
-    $('tpl-preview').innerHTML = `<div style="font-weight:700;margin-bottom:6px;">${center.name} — ${monthLabel(ym)} 운영실적</div>
-      <table class="rt-table"><thead><tr><th style="width:22%;">구분</th><th>전월 실적</th><th>당월 실적</th><th>증감</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $('tpl-preview').innerHTML = `<div style="font-weight:700;margin-bottom:6px;">${center.name} — ${monthNum}월 실적</div>
+      <table class="rt-table"><thead><tr><th style="width:22%;">구분</th><th>전월 실적</th><th>${monthNum}월 실적</th><th>증감</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   // ---- 청구·도급비형(billing) 폼 ----
@@ -600,8 +624,17 @@ ${fieldDesc}
       html += `<tr class="rt-total"><td class="rt-label">합계</td><td class="bill-sum-supply">-</td><td class="bill-sum-vat">-</td><td class="bill-sum-total">-</td></tr>`;
     }
     html += `</tbody></table>
-      <div class="rt-section-title">전월 대비 비교 (자동계산)</div>
-      <table class="rt-table" id="bill-diff"><thead><tr><th style="width:26%;">구분</th>${cfg.hasContract?'<th>계약금액</th><th>계약대비</th>':''}<th>전월청구</th><th>전월대비</th></tr></thead><tbody></tbody></table>`;
+      <div class="rt-section-title">전월 대비 비교 (전월청구는 직접 입력·수정 가능)</div>
+      <table class="rt-table" id="bill-diff"><thead><tr><th style="width:26%;">구분</th>${cfg.hasContract?'<th>계약금액</th><th>계약대비</th>':''}<th>전월청구 (입력/수정)</th><th>전월대비</th></tr></thead>
+      <tbody>${cfg.rowLabels.map((label,i)=>`
+        <tr data-idx="${i}">
+          <td class="rt-label">${label}</td>
+          ${cfg.hasContract?`<td>${fmt(cfg.contractAmount)}</td><td class="bill-diff-contract" data-idx="${i}">-</td>`:''}
+          <td class="rt-num-input"><input type="number" class="bill-prev" data-idx="${i}"></td>
+          <td class="bill-diff-prev" data-idx="${i}">-</td>
+        </tr>`).join('')}
+      ${cfg.rowLabels.length>1?`<tr class="rt-total"><td class="rt-label">합계</td>${cfg.hasContract?'<td>-</td><td>-</td>':''}<td class="bill-sum-prev">-</td><td class="bill-sum-diff">-</td></tr>`:''}
+      </tbody></table>`;
 
     if(cfg.hasAuto){
       html += `<div class="rt-section-title">${cfg.autoLabel}</div>
@@ -611,7 +644,8 @@ ${fieldDesc}
         </div>
         <table class="rt-table" id="bill-auto-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead>
         <tbody><tr><td class="rt-label">도급수수료</td><td class="bill-auto-supply">-</td><td class="bill-auto-vat">-</td><td class="bill-auto-total">-</td></tr></tbody></table>
-        <table class="rt-table" id="bill-auto-diff"><thead><tr><th style="width:30%;">구분</th><th>전월청구</th><th>전월대비</th></tr></thead><tbody></tbody></table>`;
+        <table class="rt-table" id="bill-auto-diff"><thead><tr><th style="width:30%;">구분</th><th>전월청구 (입력/수정)</th><th>전월대비</th></tr></thead>
+        <tbody><tr><td class="rt-label">${cfg.autoLabel}</td><td class="rt-num-input"><input type="number" id="bill-auto-prev"></td><td class="bill-auto-diff-cell">-</td></tr></tbody></table>`;
     }
     if(cfg.headcountEnabled){
       html = `<div class="rt-row"><div class="rt-field" style="max-width:160px;"><label>청구인원 (명)</label><input type="number" id="bill-headcount"></div></div>` + html;
@@ -619,16 +653,27 @@ ${fieldDesc}
     html += `<div class="rt-field" style="margin-top:10px;"><label>전월 대비 문구 (자동 초안 — 필요시 수정)</label><textarea class="rt-comment" id="bill-comment"></textarea></div>`;
     form.innerHTML = html;
 
-    // 값 채우기
+    // 값 채우기 (당월)
     cfg.rowLabels.forEach((_,i)=>{
       const inp = document.querySelector(`.bill-supply[data-idx="${i}"]`);
       inp.value = currentRecord && currentRecord.supplies && currentRecord.supplies[i]!==undefined ? currentRecord.supplies[i] : '';
       inp.addEventListener('input', ()=>updateBillingPreview(center));
     });
+    // 값 채우기 (전월 — 자동 반영값이되 직접 수정 가능)
+    cfg.rowLabels.forEach((_,i)=>{
+      const prevInp = document.querySelector(`.bill-prev[data-idx="${i}"]`);
+      const prevVal = currentPrevRecord && currentPrevRecord.supplies ? currentPrevRecord.supplies[i] : null;
+      prevInp.value = (prevVal!==null && prevVal!==undefined) ? prevVal : '';
+      prevInp.addEventListener('input', ()=>updateBillingPreview(center));
+    });
     if(cfg.hasAuto){
       $('bill-autocount').value = currentRecord && currentRecord.autoCount!==undefined ? currentRecord.autoCount : '';
       $('bill-unitprice').addEventListener('input', ()=>updateBillingPreview(center));
       $('bill-autocount').addEventListener('input', ()=>updateBillingPreview(center));
+      const autoPrevInp = $('bill-auto-prev');
+      const prevAutoVal = currentPrevRecord ? currentPrevRecord.autoSupply : null;
+      autoPrevInp.value = (prevAutoVal!==null && prevAutoVal!==undefined) ? prevAutoVal : '';
+      autoPrevInp.addEventListener('input', ()=>updateBillingPreview(center));
     }
     if(cfg.headcountEnabled){
       $('bill-headcount').value = currentRecord && currentRecord.headcount!==undefined && currentRecord.headcount!==null ? currentRecord.headcount : '';
@@ -659,24 +704,33 @@ ${fieldDesc}
       document.querySelector('.bill-sum-vat').textContent = fmt(sumVat);
       document.querySelector('.bill-sum-total').textContent = fmt(sumTotal);
     }
-    const prevSupplies = currentPrevRecord ? currentPrevRecord.supplies : null;
-    const prevSum = prevSupplies ? prevSupplies.reduce((a,b)=>a+(b||0),0) : null;
-    let diffRows = '';
+
+    // 전월청구 — 입력칸(직접 수정 가능) 값을 기준으로 계산
+    const prevSupplies = cfg.rowLabels.map((_,i)=>{
+      const v = document.querySelector(`.bill-prev[data-idx="${i}"]`).value;
+      return v===''?null:Number(v);
+    });
+    const prevSumFinal = prevSupplies.every(v=>v!==null) ? prevSupplies.reduce((a,b)=>a+b,0) : (prevSupplies.some(v=>v!==null) ? prevSupplies.reduce((a,b)=>a+(b||0),0) : null);
+
     cfg.rowLabels.forEach((label,i)=>{
       const cur = curSupplies[i];
-      const prev = prevSupplies ? prevSupplies[i] : null;
-      const diff = (cur!==null && prev!==null && prev!==undefined) ? cur-prev : null;
-      diffRows += `<tr><td class="rt-label">${label}</td>${cfg.hasContract?`<td>${fmt(cfg.contractAmount)}</td><td>${signedFmt(cur!==null?cur-(cfg.contractAmount||0):null)}</td>`:''}<td>${(prev!==null&&prev!==undefined)?fmt(prev):'-'}</td><td>${signedFmt(diff)}</td></tr>`;
+      const prev = prevSupplies[i];
+      const diff = (cur!==null && prev!==null) ? cur-prev : null;
+      if(cfg.hasContract){
+        const cell = document.querySelector(`.bill-diff-contract[data-idx="${i}"]`);
+        if(cell) cell.textContent = signedFmt(cur!==null?cur-(cfg.contractAmount||0):null);
+      }
+      document.querySelector(`.bill-diff-prev[data-idx="${i}"]`).textContent = signedFmt(diff);
     });
     if(cfg.rowLabels.length>1){
       const curTotalSum = curSupplies.every(v=>v!==null) ? curSupplies.reduce((a,b)=>a+b,0) : null;
-      const diffTotal = (curTotalSum!==null && prevSum!==null) ? curTotalSum-prevSum : null;
-      diffRows += `<tr class="rt-total"><td class="rt-label">합계</td>${cfg.hasContract?'<td>-</td><td>-</td>':''}<td>${prevSum!==null?fmt(prevSum):'-'}</td><td>${signedFmt(diffTotal)}</td></tr>`;
+      const diffTotal = (curTotalSum!==null && prevSumFinal!==null) ? curTotalSum-prevSumFinal : null;
+      document.querySelector('.bill-sum-prev').textContent = prevSumFinal!==null?fmt(prevSumFinal):'-';
+      document.querySelector('.bill-sum-diff').textContent = signedFmt(diffTotal);
     }
-    document.querySelector('#bill-diff tbody').innerHTML = diffRows;
 
     // 자동이체
-    let autoSupply=null, autoVat=null, autoTotal=null;
+    let autoSupply=null, autoVat=null, autoTotal=null, autoPrev=null;
     if(cfg.hasAuto){
       const unitPrice = Number($('bill-unitprice').value||0);
       const count = $('bill-autocount').value===''?null:Number($('bill-autocount').value);
@@ -686,19 +740,20 @@ ${fieldDesc}
       document.querySelector('.bill-auto-supply').textContent = autoSupply===null?'-':fmt(autoSupply);
       document.querySelector('.bill-auto-vat').textContent = autoVat===null?'-':fmt(autoVat);
       document.querySelector('.bill-auto-total').textContent = autoTotal===null?'-':fmt(autoTotal);
-      const prevAutoSupply = currentPrevRecord ? currentPrevRecord.autoSupply : null;
-      const autoDiff = (autoSupply!==null && prevAutoSupply!==null && prevAutoSupply!==undefined) ? autoSupply-prevAutoSupply : null;
-      document.querySelector('#bill-auto-diff tbody').innerHTML = `<tr><td class="rt-label">${cfg.autoLabel}</td><td>${(prevAutoSupply!==null&&prevAutoSupply!==undefined)?fmt(prevAutoSupply):'-'}</td><td>${signedFmt(autoDiff)}</td></tr>`;
+      const autoPrevRaw = $('bill-auto-prev').value;
+      autoPrev = autoPrevRaw===''?null:Number(autoPrevRaw);
+      const autoDiff = (autoSupply!==null && autoPrev!==null) ? autoSupply-autoPrev : null;
+      document.querySelector('.bill-auto-diff-cell').textContent = signedFmt(autoDiff);
     }
 
-    // 코멘트 자동초안
+    // 코멘트 자동초안 — 전월청구(직접 수정한 값 포함) 기준으로 매번 재작성
     const commentEl = $('bill-comment');
     if(commentEl && !commentEl.dataset.userEdited){
       let lines = [];
       const curTotalSum = curSupplies.every(v=>v!==null) ? curSupplies.reduce((a,b)=>a+b,0) : null;
-      if(curTotalSum!==null && prevSum!==null && prevSum!==undefined){
-        const diff = curTotalSum-prevSum;
-        lines.push(`- 전월 청구금액 ${fmt(prevSum)}원 → ${fmt(curTotalSum)}원, ${diff===0?'변동없음':(diff>0?'▲':'▼')+fmt(Math.abs(diff))+'원'}`);
+      if(curTotalSum!==null && prevSumFinal!==null){
+        const diff = curTotalSum-prevSumFinal;
+        lines.push(`- 전월 청구금액 ${fmt(prevSumFinal)}원 → ${fmt(curTotalSum)}원, ${diff===0?'변동없음':(diff>0?'▲':'▼')+fmt(Math.abs(diff))+'원'}`);
       }
       if(cfg.headcountEnabled){
         const hc = $('bill-headcount').value===''?null:Number($('bill-headcount').value);
@@ -707,12 +762,8 @@ ${fieldDesc}
           lines.push(`- 전월대비 청구인원 ${prevHc}명 → ${hc}명, ${Math.abs(hc-prevHc)}명 ${hc>prevHc?'증가':'감소'}`);
         }
       }
-      if(cfg.hasAuto && autoSupply!==null){
-        const prevAutoCount = currentPrevRecord ? currentPrevRecord.autoCount : null;
-        const count = $('bill-autocount').value===''?null:Number($('bill-autocount').value);
-        if(count!==null && prevAutoCount!==null && prevAutoCount!==undefined && count!==prevAutoCount){
-          lines.push(`- 전월 전환건수 ${prevAutoCount}건 대비 ${Math.abs(count-prevAutoCount)}건 ${count>prevAutoCount?'증가':'감소'}`);
-        }
+      if(cfg.hasAuto && autoSupply!==null && autoPrev!==null && autoSupply!==autoPrev){
+        lines.push(`- 전월 청구금액 ${fmt(autoPrev)}원 대비 ${fmt(Math.abs(autoSupply-autoPrev))}원 ${autoSupply>autoPrev?'증가':'감소'} (${cfg.autoLabel})`);
       }
       commentEl.value = lines.join('\n');
     }
@@ -730,10 +781,22 @@ ${fieldDesc}
       previewRows += `<tr class="rt-total"><td class="rt-label">합계</td><td>${fmt(sumSupply)}</td><td>${fmt(sumVat)}</td><td>${fmt(sumTotal)}</td></tr>`;
     }
     const previewMainTable = `<table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead><tbody>${previewRows}</tbody></table>`;
-    const previewDiffTable = `<table class="rt-table"><thead><tr><th style="width:26%;">구분</th>${cfg.hasContract?'<th>계약금액</th><th>계약대비</th>':''}<th>전월청구</th><th>전월대비</th></tr></thead><tbody>${diffRows}</tbody></table>`;
+    let previewDiffRows = '';
+    cfg.rowLabels.forEach((label,i)=>{
+      const cur = curSupplies[i], prev = prevSupplies[i];
+      const diff = (cur!==null && prev!==null) ? cur-prev : null;
+      previewDiffRows += `<tr><td class="rt-label">${label}</td>${cfg.hasContract?`<td>${fmt(cfg.contractAmount)}</td><td>${signedFmt(cur!==null?cur-(cfg.contractAmount||0):null)}</td>`:''}<td>${prev!==null?fmt(prev):'-'}</td><td>${signedFmt(diff)}</td></tr>`;
+    });
+    if(cfg.rowLabels.length>1){
+      const curTotalSum = curSupplies.every(v=>v!==null) ? curSupplies.reduce((a,b)=>a+b,0) : null;
+      const diffTotal = (curTotalSum!==null && prevSumFinal!==null) ? curTotalSum-prevSumFinal : null;
+      previewDiffRows += `<tr class="rt-total"><td class="rt-label">합계</td>${cfg.hasContract?'<td>-</td><td>-</td>':''}<td>${prevSumFinal!==null?fmt(prevSumFinal):'-'}</td><td>${signedFmt(diffTotal)}</td></tr>`;
+    }
+    const previewDiffTable = `<table class="rt-table"><thead><tr><th style="width:26%;">구분</th>${cfg.hasContract?'<th>계약금액</th><th>계약대비</th>':''}<th>전월청구</th><th>전월대비</th></tr></thead><tbody>${previewDiffRows}</tbody></table>`;
     let previewAutoHtml = '';
     if(cfg.hasAuto){
-      const autoDiffRow = document.querySelector('#bill-auto-diff tbody').innerHTML;
+      const autoDiff = (autoSupply!==null && autoPrev!==null) ? autoSupply-autoPrev : null;
+      const autoDiffRow = `<tr><td class="rt-label">${cfg.autoLabel}</td><td>${autoPrev!==null?fmt(autoPrev):'-'}</td><td>${signedFmt(autoDiff)}</td></tr>`;
       previewAutoHtml = `<div style="font-weight:700;margin:10px 0 4px;">${cfg.autoLabel}</div>
         <table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead>
         <tbody><tr><td class="rt-label">도급수수료</td><td>${autoSupply===null?'-':fmt(autoSupply)}</td><td>${autoVat===null?'-':fmt(autoVat)}</td><td>${autoTotal===null?'-':fmt(autoTotal)}</td></tr></tbody></table>
