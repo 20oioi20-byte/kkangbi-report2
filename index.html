@@ -89,6 +89,11 @@
   .rt-btn-danger:hover{ background:#FDF0EE; }
   .rt-btn-sm{ padding:5px 10px; font-size:11.5px; }
   .rt-copy-target{ border:1px dashed var(--line); padding:12px; border-radius:4px; margin-top:8px; background:#fff; }
+  .rt-copy-section{ margin-bottom:14px; }
+  .rt-copy-section-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .rt-copy-section-head span{ font-size:12px; font-weight:700; color:var(--navy); }
+  .rt-mini-copy-btn{ border:1px solid var(--navy); background:#fff; color:var(--navy); font-size:11px; font-weight:700; padding:3px 9px; border-radius:4px; cursor:pointer; }
+  .rt-mini-copy-btn:hover{ background:#F0F2F6; }
   .rt-toast{ position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--navy); color:#fff;
     padding:10px 18px; border-radius:4px; font-size:12.6px; opacity:0; pointer-events:none; transition:opacity .2s; z-index:999; }
   .rt-toast.show{ opacity:1; }
@@ -509,7 +514,7 @@ ${fieldDesc}
 
       <div class="rt-actions">
         <button class="rt-btn rt-btn-primary" id="btn-save-record">이번 달 저장</button>
-        <button class="rt-btn rt-btn-ghost" id="btn-copy-preview">표 복사</button>
+        <button class="rt-btn rt-btn-ghost" id="btn-copy-preview">전체 복사</button>
         <button class="rt-btn rt-danger rt-btn-danger" id="btn-delete-record" style="display:none;">이 달 기록 삭제</button>
       </div>
       <div class="rt-section-title">복사용 미리보기</div>
@@ -520,6 +525,13 @@ ${fieldDesc}
     $('in-month').addEventListener('change', async ()=>{ inputMonth.ym = $('in-month').value; await loadAndRenderTemplate(center); });
     $('ai-fill-btn').addEventListener('click', ()=>runAiFill(center));
     $('btn-copy-preview').addEventListener('click', ()=>copyHtml($('tpl-preview')));
+    $('tpl-preview').addEventListener('click', (e)=>{
+      const btn = e.target.closest('.rt-mini-copy-btn');
+      if(!btn) return;
+      const section = btn.closest('.rt-copy-section');
+      const table = section ? section.querySelector('table') : null;
+      if(table) copyHtml(table);
+    });
     $('btn-save-record').addEventListener('click', ()=>saveRecord(center));
     $('btn-delete-record').addEventListener('click', ()=>deleteRecord(center));
 
@@ -609,7 +621,10 @@ ${fieldDesc}
       rows += `<tr><td class="rt-label">${m.label}</td><td>${prevN!==null?(m.decimals?fmt1(prevN):fmt(prevN))+m.unit:'-'}</td><td>${curN!==null?(m.decimals?fmt1(curN):fmt(curN))+m.unit:'-'}</td><td>${diffHtml}</td></tr>`;
     });
     $('tpl-preview').innerHTML = `<div style="font-weight:700;margin-bottom:6px;">${center.name} — ${monthNum}월 실적</div>
-      <table class="rt-table"><thead><tr><th style="width:22%;">구분</th><th>전월 실적</th><th>${monthNum}월 실적</th><th>증감</th></tr></thead><tbody>${rows}</tbody></table>`;
+      <div class="rt-copy-section">
+        <div class="rt-copy-section-head"><span>${monthNum}월 운영실적표</span><button class="rt-mini-copy-btn">이 표만 복사</button></div>
+        <table class="rt-table"><thead><tr><th style="width:22%;">구분</th><th>전월 실적</th><th>${monthNum}월 실적</th><th>증감</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>`;
   }
 
   // ---- 청구·도급비형(billing) 폼 ----
@@ -751,19 +766,33 @@ ${fieldDesc}
     if(commentEl && !commentEl.dataset.userEdited){
       let lines = [];
       const curTotalSum = curSupplies.every(v=>v!==null) ? curSupplies.reduce((a,b)=>a+b,0) : null;
-      if(curTotalSum!==null && prevSumFinal!==null){
-        const diff = curTotalSum-prevSumFinal;
-        lines.push(`- 전월 청구금액 ${fmt(prevSumFinal)}원 → ${fmt(curTotalSum)}원, ${diff===0?'변동없음':(diff>0?'▲':'▼')+fmt(Math.abs(diff))+'원'}`);
-      }
+      const amtDiff = (curTotalSum!==null && prevSumFinal!==null) ? curTotalSum-prevSumFinal : null;
+
       if(cfg.headcountEnabled){
         const hc = $('bill-headcount').value===''?null:Number($('bill-headcount').value);
         const prevHc = currentPrevRecord ? currentPrevRecord.headcount : null;
-        if(hc!==null && prevHc!==null && prevHc!==undefined && hc!==prevHc){
-          lines.push(`- 전월대비 청구인원 ${prevHc}명 → ${hc}명, ${Math.abs(hc-prevHc)}명 ${hc>prevHc?'증가':'감소'}`);
+        if(hc!==null && prevHc!==null && prevHc!==undefined){
+          const hcDiff = hc-prevHc;
+          const hcArrow = hcDiff>0?'▲':hcDiff<0?'▼':'-';
+          const amtArrow = amtDiff===null?'':(amtDiff>0?'▲':amtDiff<0?'▼':'-');
+          const amtText = amtDiff!==null ? ` (전월대비 청구금액 ${amtArrow}${fmt(Math.abs(amtDiff))}원)` : '';
+          lines.push(`청구인원 : 전월 ${prevHc}명 → 당월 ${hc}명, ${hcArrow}${Math.abs(hcDiff)}명${amtText}`);
         }
+      }else if(curTotalSum!==null && prevSumFinal!==null){
+        const arrow = amtDiff===0?'-':(amtDiff>0?'▲':'▼');
+        lines.push(`전월 청구금액 ${fmt(prevSumFinal)}원 → 당월 ${fmt(curTotalSum)}원, ${arrow}${fmt(Math.abs(amtDiff))}원`);
       }
-      if(cfg.hasAuto && autoSupply!==null && autoPrev!==null && autoSupply!==autoPrev){
-        lines.push(`- 전월 청구금액 ${fmt(autoPrev)}원 대비 ${fmt(Math.abs(autoSupply-autoPrev))}원 ${autoSupply>autoPrev?'증가':'감소'} (${cfg.autoLabel})`);
+
+      if(cfg.hasAuto && autoSupply!==null && autoPrev!==null){
+        const count = $('bill-autocount').value===''?null:Number($('bill-autocount').value);
+        const prevAutoCount = currentPrevRecord ? currentPrevRecord.autoCount : null;
+        const autoAmtDiff = autoSupply-autoPrev;
+        const amtArrow = autoAmtDiff===0?'-':(autoAmtDiff>0?'▲':'▼');
+        if(count!==null && prevAutoCount!==null && prevAutoCount!==undefined){
+          const cntDiff = count-prevAutoCount;
+          const cntArrow = cntDiff>0?'▲':cntDiff<0?'▼':'-';
+          lines.push(`전환건수 : 전월 ${prevAutoCount}건 → 당월 ${count}건, ${cntArrow}${Math.abs(cntDiff)}건 (전월대비 청구금액 ${amtArrow}${fmt(Math.abs(autoAmtDiff))}원)`);
+        }
       }
       commentEl.value = lines.join('\n');
     }
@@ -780,7 +809,10 @@ ${fieldDesc}
     if(cfg.rowLabels.length>1){
       previewRows += `<tr class="rt-total"><td class="rt-label">합계</td><td>${fmt(sumSupply)}</td><td>${fmt(sumVat)}</td><td>${fmt(sumTotal)}</td></tr>`;
     }
-    const previewMainTable = `<table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead><tbody>${previewRows}</tbody></table>`;
+    const previewMainTable = `<div class="rt-copy-section">
+      <div class="rt-copy-section-head"><span>청구총액표</span><button class="rt-mini-copy-btn">이 표만 복사</button></div>
+      <table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead><tbody>${previewRows}</tbody></table>
+    </div>`;
     let previewDiffRows = '';
     cfg.rowLabels.forEach((label,i)=>{
       const cur = curSupplies[i], prev = prevSupplies[i];
@@ -792,15 +824,24 @@ ${fieldDesc}
       const diffTotal = (curTotalSum!==null && prevSumFinal!==null) ? curTotalSum-prevSumFinal : null;
       previewDiffRows += `<tr class="rt-total"><td class="rt-label">합계</td>${cfg.hasContract?'<td>-</td><td>-</td>':''}<td>${prevSumFinal!==null?fmt(prevSumFinal):'-'}</td><td>${signedFmt(diffTotal)}</td></tr>`;
     }
-    const previewDiffTable = `<table class="rt-table"><thead><tr><th style="width:26%;">구분</th>${cfg.hasContract?'<th>계약금액</th><th>계약대비</th>':''}<th>전월청구</th><th>전월대비</th></tr></thead><tbody>${previewDiffRows}</tbody></table>`;
+    const previewDiffTable = `<div class="rt-copy-section">
+      <div class="rt-copy-section-head"><span>전월 대비 비교표</span><button class="rt-mini-copy-btn">이 표만 복사</button></div>
+      <table class="rt-table"><thead><tr><th style="width:26%;">구분</th>${cfg.hasContract?'<th>계약금액</th><th>계약대비</th>':''}<th>전월청구</th><th>전월대비</th></tr></thead><tbody>${previewDiffRows}</tbody></table>
+    </div>`;
     let previewAutoHtml = '';
     if(cfg.hasAuto){
       const autoDiff = (autoSupply!==null && autoPrev!==null) ? autoSupply-autoPrev : null;
       const autoDiffRow = `<tr><td class="rt-label">${cfg.autoLabel}</td><td>${autoPrev!==null?fmt(autoPrev):'-'}</td><td>${signedFmt(autoDiff)}</td></tr>`;
       previewAutoHtml = `<div style="font-weight:700;margin:10px 0 4px;">${cfg.autoLabel}</div>
-        <table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead>
-        <tbody><tr><td class="rt-label">도급수수료</td><td>${autoSupply===null?'-':fmt(autoSupply)}</td><td>${autoVat===null?'-':fmt(autoVat)}</td><td>${autoTotal===null?'-':fmt(autoTotal)}</td></tr></tbody></table>
-        <table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>전월청구</th><th>전월대비</th></tr></thead><tbody>${autoDiffRow}</tbody></table>`;
+        <div class="rt-copy-section">
+          <div class="rt-copy-section-head"><span>${cfg.autoLabel} 청구표</span><button class="rt-mini-copy-btn">이 표만 복사</button></div>
+          <table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>공급가액</th><th>부가세</th><th>합계금액</th></tr></thead>
+          <tbody><tr><td class="rt-label">도급수수료</td><td>${autoSupply===null?'-':fmt(autoSupply)}</td><td>${autoVat===null?'-':fmt(autoVat)}</td><td>${autoTotal===null?'-':fmt(autoTotal)}</td></tr></tbody></table>
+        </div>
+        <div class="rt-copy-section">
+          <div class="rt-copy-section-head"><span>${cfg.autoLabel} 전월대비표</span><button class="rt-mini-copy-btn">이 표만 복사</button></div>
+          <table class="rt-table"><thead><tr><th style="width:30%;">구분</th><th>전월청구</th><th>전월대비</th></tr></thead><tbody>${autoDiffRow}</tbody></table>
+        </div>`;
     }
     $('tpl-preview').innerHTML = `
       <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px;">${center.name} — ${periodText(center,ym)} &nbsp;|&nbsp; ${hcHtml}세금계산서 발행일 : ${$('in-taxdate').value||'-'}</div>
