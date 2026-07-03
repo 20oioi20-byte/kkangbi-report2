@@ -590,7 +590,13 @@ ${fieldDesc}
 
     container.innerHTML = `
       <div class="rt-row">
-        <div class="rt-field" style="max-width:200px;"><label>기준월</label><input type="month" id="in-month" value="${ym}"></div>
+        <div class="rt-field" style="max-width:240px;"><label>기준월</label>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="in-month-prev" style="padding:8px 10px;" title="이전 달">◀</button>
+            <input type="month" id="in-month" value="${ym}" style="flex:1;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="in-month-next" style="padding:8px 10px;" title="다음 달">▶</button>
+          </div>
+        </div>
         ${center.type==='billing' ? `<div class="rt-field" style="max-width:200px;"><label>세금계산서 발행일</label><input type="date" id="in-taxdate"></div>` : ''}
         <div class="rt-field" style="flex:2;"><div class="rt-status" id="in-status">-</div></div>
       </div>
@@ -621,7 +627,21 @@ ${fieldDesc}
     `;
 
     if($('in-taxdate')) $('in-taxdate').value = new Date().toISOString().slice(0,10);
-    $('in-month').addEventListener('change', async ()=>{ inputMonth.ym = $('in-month').value; await loadAndRenderTemplate(center); });
+    $('tpl-form').addEventListener('input', ()=>{ formDirty = true; });
+    async function goToMonth(newYm){
+      if(formDirty){ snapshotCurrentForm(); }
+      inputMonth.ym = newYm;
+      $('in-month').value = newYm;
+      await loadAndRenderTemplate(center);
+    }
+    function shiftMonth(ym, delta){
+      const [y,m] = ym.split('-').map(Number);
+      const d = new Date(y, m-1+delta, 1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }
+    $('in-month').addEventListener('change', async ()=>{ await goToMonth($('in-month').value); });
+    $('in-month-prev').addEventListener('click', async ()=>{ await goToMonth(shiftMonth(inputMonth.ym, -1)); });
+    $('in-month-next').addEventListener('click', async ()=>{ await goToMonth(shiftMonth(inputMonth.ym, 1)); });
     $('ai-fill-btn').addEventListener('click', ()=>runAiFill(center));
     $('btn-copy-preview').addEventListener('click', ()=>copyHtml($('tpl-preview')));
     $('tpl-preview').addEventListener('click', (e)=>{
@@ -638,6 +658,37 @@ ${fieldDesc}
   }
 
   let currentRecord = null, currentPrevRecord = null;
+  const draftCache = {}; // 세션 임시 저장 (저장 전 입력값 유지) — 새로고침 시에는 사라짐
+  let formDirty = false; // 렌더 이후 사용자가 실제로 값을 바꿨는지 추적
+
+  function draftKey(){ return `${inputMonth.centerId}|${inputMonth.ym}`; }
+
+  // 현재 입력 폼의 모든 값을 draft로 스냅샷 (다른 달로 이동하기 직전에 호출)
+  function snapshotCurrentForm(){
+    if(!inputMonth || !inputMonth.centerId) return;
+    const fields = {};
+    document.querySelectorAll('#tpl-form input, #tpl-form textarea').forEach(el=>{
+      const sel = el.id || `${el.className}::${el.dataset.id||el.dataset.idx||''}`;
+      fields[sel] = el.value;
+    });
+    if($('in-taxdate')) fields['in-taxdate'] = $('in-taxdate').value;
+    const commentEl = document.querySelector('#bill-comment');
+    draftCache[draftKey()] = { fields, commentUserEdited: commentEl ? commentEl.dataset.userEdited : undefined };
+  }
+
+  // draft가 있으면 폼 렌더 직후 값 복원 (저장 안 한 입력 유지)
+  function restoreDraftForm(){
+    const draft = draftCache[draftKey()];
+    if(!draft) return false;
+    document.querySelectorAll('#tpl-form input, #tpl-form textarea').forEach(el=>{
+      const sel = el.id || `${el.className}::${el.dataset.id||el.dataset.idx||''}`;
+      if(draft.fields[sel] !== undefined) el.value = draft.fields[sel];
+    });
+    if($('in-taxdate') && draft.fields['in-taxdate']!==undefined) $('in-taxdate').value = draft.fields['in-taxdate'];
+    const commentEl = document.querySelector('#bill-comment');
+    if(commentEl && draft.commentUserEdited) commentEl.dataset.userEdited = draft.commentUserEdited;
+    return true;
+  }
 
   // 정확히 "전월"에 저장된 기록이 없으면, 가장 최근에 저장된 이전 기록을 찾아 전월값 기준으로 사용
   async function findMostRecentPriorRecord(centerId, ym){
@@ -650,6 +701,7 @@ ${fieldDesc}
   }
 
   async function loadAndRenderTemplate(center){
+    formDirty = false;
     const ym = inputMonth.ym;
     $('in-period').textContent = `청구/보고 기간: ${periodText(center, ym)}`;
     currentRecord = await storageGet(`rec__${center.id}__${ym}`);
@@ -664,7 +716,9 @@ ${fieldDesc}
       prevSourceYm = found ? found.ym : null;
     }
     const st = $('in-status');
-    if(currentRecord){ st.className='rt-status'; st.textContent = `${monthLabel(ym)} 기존 저장 기록을 불러왔습니다. (수정 후 다시 저장 가능)`; }
+    const hasDraft = !!draftCache[draftKey()];
+    if(hasDraft){ st.className='rt-status'; st.textContent = `${monthLabel(ym)} — 저장하지 않은 입력값을 이어서 불러왔습니다.`; }
+    else if(currentRecord){ st.className='rt-status'; st.textContent = `${monthLabel(ym)} 기존 저장 기록을 불러왔습니다. (수정 후 다시 저장 가능)`; }
     else if(currentPrevRecord && prevSourceYm===exactPm){ st.className='rt-status'; st.textContent = `${monthLabel(exactPm)} 데이터를 전월값으로 자동 반영했습니다.`; }
     else if(currentPrevRecord){ st.className='rt-status'; st.textContent = `전월(${monthLabel(exactPm)}) 저장 기록이 없어, 가장 최근 저장된 ${monthLabel(prevSourceYm)} 데이터를 전월값으로 자동 반영했습니다. 필요하면 직접 수정하세요.`; }
     else{ st.className='rt-status warn'; st.textContent = `이전에 저장된 데이터가 없습니다. 신규 작업이면 전월값 칸에 직접 입력해주세요.`; }
@@ -672,6 +726,10 @@ ${fieldDesc}
 
     if(center.type==='perf') renderPerfForm(center);
     else renderBillingForm(center);
+    if(restoreDraftForm()){
+      if(center.type==='perf') updatePerfPreview(center);
+      else updateBillingPreview(center);
+    }
   }
 
   // ---- 실적형(perf) 폼 ----
@@ -1020,6 +1078,8 @@ ${fieldDesc}
     record.taxDate = $('in-taxdate') ? $('in-taxdate').value : null;
     record.savedAt = new Date().toISOString();
     await storageSet(`rec__${center.id}__${ym}`, record);
+    delete draftCache[draftKey()];
+    formDirty = false;
     toast(`${monthLabel(ym)} 기록을 저장했습니다.`);
     currentRecord = record;
     $('btn-delete-record').style.display = '';
