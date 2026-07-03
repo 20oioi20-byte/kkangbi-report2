@@ -145,6 +145,7 @@
     </div>
     <div class="rt-search"><input id="side-search" placeholder="센터·월 검색"></div>
     <div class="rt-nav-item active" data-view="all" id="nav-all">전체 보기</div>
+    <div class="rt-nav-item" data-view="backup" id="nav-backup">백업 / 복원</div>
     <div class="rt-center-list" id="side-centers"></div>
     <button class="rt-add-center-btn" id="btn-add-center">+ 센터 추가</button>
   </aside>
@@ -400,6 +401,7 @@ ${fieldDesc}
       el.addEventListener('click', ()=>{ currentView = { type:'center', id: el.dataset.id, sub:'input' }; renderAll(); });
     });
     $('nav-all').classList.toggle('active', currentView.type==='all');
+    $('nav-backup').classList.toggle('active', currentView.type==='backup');
     $('rt-sb-status').textContent = SB_ENABLED ? '● Supabase 연결됨' : '○ 로컬 저장 모드';
   }
 
@@ -442,6 +444,103 @@ ${fieldDesc}
       : `<div class="rt-empty">저장된 내역이 없습니다.</div>`;
     $('all-recent').querySelectorAll('[data-goto]').forEach(b=>{
       b.addEventListener('click', ()=>{ currentView = {type:'center', id:b.dataset.goto, sub:'history'}; renderAll(); });
+    });
+  }
+
+  // ============================================================
+  // 백업 / 복원
+  // ============================================================
+  async function collectAllData(){
+    const recRecords = await storageList('rec__');
+    const bonusRecords = await storageList('bonus__');
+    const data = { version:1, exportedAt:new Date().toISOString(), centers, records:{}, bonusRecords:{} };
+    recRecords.forEach(item=>{ data.records[item.key] = item.value; });
+    bonusRecords.forEach(item=>{ data.bonusRecords[item.key] = item.value; });
+    return data;
+  }
+
+  async function restoreFromData(data){
+    if(!data || !Array.isArray(data.centers)){
+      toast('올바른 백업 파일이 아닙니다.');
+      return false;
+    }
+    const recCount = data.records ? Object.keys(data.records).length : 0;
+    const bonusCount = data.bonusRecords ? Object.keys(data.bonusRecords).length : 0;
+    const ok = confirm(`센터 ${data.centers.length}개, 월별 기록 ${recCount}건, 성과급 기록 ${bonusCount}건을 복원합니다.\n현재 저장된 데이터는 이 백업 내용으로 덮어써집니다. 계속하시겠습니까?`);
+    if(!ok) return false;
+    await storageSet('centers', data.centers);
+    if(data.records){
+      for(const key of Object.keys(data.records)){ await storageSet(key, data.records[key]); }
+    }
+    if(data.bonusRecords){
+      for(const key of Object.keys(data.bonusRecords)){ await storageSet(key, data.bonusRecords[key]); }
+    }
+    await loadCenters();
+    toast('복원이 완료되었습니다.');
+    currentView = {type:'all'};
+    await renderAll();
+    return true;
+  }
+
+  function downloadJSON(obj, filename){
+    const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function renderBackupView(){
+    const main = $('rt-main');
+    main.innerHTML = `
+      <div class="rt-main-header"><div><h2>백업 / 복원</h2><div class="desc">센터 목록과 저장된 모든 월별 기록을 백업하고 복원합니다.</div></div></div>
+
+      <div class="rt-section-title">① 백업 (내보내기)</div>
+      <div class="rt-actions" style="margin-top:0;">
+        <button class="rt-btn rt-btn-primary" id="backup-copy">클립보드로 복사</button>
+        <button class="rt-btn rt-btn-ghost" id="backup-download">파일로 다운로드 (.json)</button>
+      </div>
+      <div class="rt-hint">현재 센터 목록 전체와 저장된 모든 월별 기록(청구/실적/성과급)을 포함합니다.</div>
+
+      <div class="rt-section-title">② 복원 (가져오기)</div>
+      <div class="rt-field"><label>클립보드/텍스트에서 붙여넣기</label><textarea id="restore-paste" class="rt-comment" style="min-height:120px;" placeholder="백업 JSON 내용을 여기에 붙여넣으세요"></textarea></div>
+      <div class="rt-actions" style="margin-top:8px;">
+        <button class="rt-btn rt-btn-primary" id="restore-paste-btn">붙여넣은 내용으로 복원</button>
+      </div>
+
+      <div class="rt-field" style="margin-top:18px;"><label>파일 업로드</label><input type="file" id="restore-file" accept=".json,application/json"></div>
+      <div class="rt-actions" style="margin-top:8px;">
+        <button class="rt-btn rt-btn-primary" id="restore-file-btn">업로드한 파일로 복원</button>
+      </div>
+
+      <div class="rt-status warn" style="margin-top:18px;display:inline-block;">⚠ 복원을 실행하면 현재 저장된 센터·기록이 백업 데이터로 덮어써집니다. 실행 전 확인창이 한 번 더 뜹니다.</div>
+    `;
+
+    $('backup-copy').addEventListener('click', async ()=>{
+      const data = await collectAllData();
+      copyText(JSON.stringify(data, null, 2));
+    });
+    $('backup-download').addEventListener('click', async ()=>{
+      const data = await collectAllData();
+      const ymStr = new Date().toISOString().slice(0,10);
+      downloadJSON(data, `report-backup-${ymStr}.json`);
+      toast('백업 파일을 다운로드했습니다.');
+    });
+    $('restore-paste-btn').addEventListener('click', async ()=>{
+      const raw = $('restore-paste').value.trim();
+      if(!raw){ toast('붙여넣을 백업 내용을 입력하세요.'); return; }
+      let data;
+      try{ data = JSON.parse(raw); }catch(e){ toast('JSON 형식을 읽을 수 없습니다. 백업 내용을 다시 확인해주세요.'); return; }
+      await restoreFromData(data);
+    });
+    $('restore-file-btn').addEventListener('click', async ()=>{
+      const files = $('restore-file').files;
+      if(!files || !files.length){ toast('복원할 파일을 선택하세요.'); return; }
+      const text = await files[0].text();
+      let data;
+      try{ data = JSON.parse(text); }catch(e){ toast('JSON 파일을 읽을 수 없습니다.'); return; }
+      await restoreFromData(data);
     });
   }
 
@@ -1178,10 +1277,12 @@ ${fieldDesc}
   async function renderAll(){
     renderSidebar();
     if(currentView.type==='all') await renderAllView();
+    else if(currentView.type==='backup') renderBackupView();
     else await renderCenterView();
   }
 
   $('nav-all').addEventListener('click', ()=>{ currentView = {type:'all'}; renderAll(); });
+  $('nav-backup').addEventListener('click', ()=>{ currentView = {type:'backup'}; renderAll(); });
   $('btn-add-center').addEventListener('click', ()=>openCenterModal(null));
   $('side-search').addEventListener('input', ()=>{ searchQuery = $('side-search').value; renderAll(); });
 
