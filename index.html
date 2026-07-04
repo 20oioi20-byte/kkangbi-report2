@@ -495,42 +495,111 @@ ${fieldDesc}
   // ============================================================
   // 전체 보기
   // ============================================================
+  // 센터 한 곳의 모든 모듈(입력/성과급/점검/보고) 이력을 하나의 배열로 수집 (검색/정렬 전 원본)
+  async function collectCenterHistoryRows(center){
+    const recHist = await storageList(`rec__${center.id}__`);
+    const bonusHist = center.bonusEnabled ? await storageList(`bonus__${center.id}__`) : [];
+    const weeklyHist = center.weeklyCheckEnabled ? await storageList(`weekly__${center.id}__`) : [];
+    const reportHist = center.simpleReportEnabled ? await storageList(`report__${center.id}__`) : [];
+
+    const rows = [];
+    recHist.forEach(item=>{
+      const ym = item.key.split('__').pop();
+      let summary = center.type==='perf'
+        ? `인입 ${fmt(item.value.inbound)}건 · 응대율 ${fmt1(item.value.rate)}%`
+        : `공급가액 합계 ${fmt((item.value.supplies||[]).reduce((a,b)=>a+(b||0),0))}원`;
+      rows.push({ centerId:center.id, centerName:center.name, module:inputTabLabel(center), sub:'input', ym, summary, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    bonusHist.forEach(item=>{
+      const parts = item.key.split('__'); const ym = parts.pop(); const typeId = parts.pop();
+      const pt = (center.payoutTypes||[]).find(p=>p.id===typeId);
+      rows.push({ centerId:center.id, centerName:center.name, module: pt?pt.label:'성과급', sub:`bonus:${typeId}`, ym, summary:`${fmt(item.value.amount)}원 · 지급일 ${item.value.paydate||'-'}`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    weeklyHist.forEach(item=>{
+      const ym = item.key.split('__').pop();
+      const rowsData = item.value.rows||[];
+      rows.push({ centerId:center.id, centerName:center.name, module:(center.weeklyCheckConfig&&center.weeklyCheckConfig.tabLabel)||'점검입력', sub:'weekly', ym, summary:`점검 ${rowsData.length}회 · 취약인원 합계 ${rowsData.reduce((a,r)=>a+(Number(r.vuln)||0),0)}명`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    reportHist.forEach(item=>{
+      const parts = item.key.split('__'); const ym = parts.pop(); const kindId = parts.pop();
+      const kind = (center.simpleReportConfig&&center.simpleReportConfig.kinds||[]).find(k=>k.id===kindId);
+      rows.push({ centerId:center.id, centerName:center.name, module: kind?(kind.tabLabel||kind.label):'보고', sub:`report:${kindId}`, ym, summary:(item.value.result||'-'), updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    return rows;
+  }
+
+  function routeToHistoryRow(r){
+    const center = getCenter(r.centerId);
+    if(!center) return;
+    if(r.sub==='input'){ inputMonth = {centerId:center.id, ym:r.ym}; }
+    else if(r.sub.startsWith('bonus:')){ bonusMonth = {centerId:center.id, ym:r.ym, payoutTypeId:r.sub.slice(6)}; }
+    else if(r.sub==='weekly'){ weeklyMonth = {centerId:center.id, ym:r.ym}; }
+    else if(r.sub.startsWith('report:')){ reportMonth = {centerId:center.id, ym:r.ym, kindId:r.sub.slice(7)}; }
+    currentView = { type:'center', id:center.id, sub:r.sub };
+  }
+  async function deleteHistoryRow(r){
+    const center = getCenter(r.centerId);
+    if(!center) return;
+    if(r.sub==='input') await storageDelete(`rec__${center.id}__${r.ym}`);
+    else if(r.sub.startsWith('bonus:')) await storageDelete(`bonus__${center.id}__${r.sub.slice(6)}__${r.ym}`);
+    else if(r.sub==='weekly') await storageDelete(`weekly__${center.id}__${r.ym}`);
+    else if(r.sub.startsWith('report:')) await storageDelete(`report__${center.id}__${r.sub.slice(7)}__${r.ym}`);
+  }
+
+  let allViewPage = 0;
   async function renderAllView(){
     const main = $('rt-main');
-    main.innerHTML = `<div class="rt-main-header"><div><h2>전체 보기</h2><div class="desc">센터별 최근 저장 현황과 최근 작업 내역</div></div></div>
-      <table class="rt-summary-table"><thead><tr><th>센터</th><th>유형</th><th>최근 저장월</th><th>최근 값 요약</th></tr></thead><tbody id="all-summary-body"></tbody></table>
-      <div class="rt-section-title">최근 작업 내역</div>
-      <div id="all-recent"></div>`;
-    const tbody = $('all-summary-body');
-    let rows = '';
-    const recentAll = [];
+    main.innerHTML = `<div class="rt-main-header"><div><h2>전체 보기</h2><div class="desc">전체 센터의 모든 이력을 저장된 순서(최신순)로 모아봅니다.</div></div></div>
+      <div id="all-recent"></div>
+      <div class="rt-actions" id="all-pager" style="justify-content:center;"></div>`;
+
+    let rows = [];
     for(const c of centers){
-      const hist = await storageList(`rec__${c.id}__`);
-      const latest = hist[0];
-      let summary = '-';
-      if(latest){
-        if(c.type==='perf') summary = `인입 ${fmt(latest.value.inbound)}건`;
-        else{
-          const s = (latest.value.supplies||[]).reduce((a,b)=>a+(b||0),0);
-          summary = `공급가액 합계 ${fmt(s)}원`;
-        }
-        recentAll.push({ center:c, ym: latest.key.split('__').pop(), value: latest.value, updated_at: latest.updated_at });
-      }
-      rows += `<tr data-id="${c.id}"><td>${c.name}</td><td>${TYPE_LABEL[c.type]}</td><td>${latest? monthLabel(latest.key.split('__').pop()) : '-'}</td><td>${summary}</td></tr>`;
+      rows = rows.concat(await collectCenterHistoryRows(c));
     }
-    tbody.innerHTML = rows || `<tr><td colspan="4" style="text-align:center;color:var(--sub);">등록된 센터가 없습니다.</td></tr>`;
-    tbody.querySelectorAll('tr[data-id]').forEach(tr=>{
-      tr.addEventListener('click', ()=>{ currentView = {type:'center', id:tr.dataset.id, sub:'allhistory'}; renderAll(); });
-    });
 
     const q = searchQuery.trim().toLowerCase();
-    const filteredRecent = recentAll.filter(r=> !q || r.center.name.toLowerCase().includes(q) || r.ym.includes(q) || JSON.stringify(r.value||{}).toLowerCase().includes(q));
-    $('all-recent').innerHTML = filteredRecent.length ? filteredRecent.map(r=>`
-      <div class="rt-history-row"><div class="info"><b>${r.center.name}</b> · ${monthLabel(r.ym)}</div>
-      <div class="ops"><button class="rt-btn rt-btn-ghost rt-btn-sm" data-goto="${r.center.id}">열기</button></div></div>`).join('')
-      : `<div class="rt-empty">저장된 내역이 없습니다.</div>`;
-    $('all-recent').querySelectorAll('[data-goto]').forEach(b=>{
-      b.addEventListener('click', ()=>{ currentView = {type:'center', id:b.dataset.goto, sub:'allhistory'}; renderAll(); });
+    if(q){
+      rows = rows.filter(r=> JSON.stringify(r.raw).toLowerCase().includes(q) || r.ym.includes(q) || r.module.toLowerCase().includes(q) || r.centerName.toLowerCase().includes(q) || monthLabel(r.ym).toLowerCase().includes(q));
+    }
+    rows.sort((a,b)=> (a.updatedAt < b.updatedAt ? 1 : -1));
+
+    const pageSize = 10;
+    const totalPages = Math.max(1, Math.ceil(rows.length/pageSize));
+    if(allViewPage >= totalPages) allViewPage = totalPages-1;
+    if(allViewPage < 0) allViewPage = 0;
+    const pageRows = rows.slice(allViewPage*pageSize, allViewPage*pageSize+pageSize);
+
+    $('all-recent').innerHTML = pageRows.length ? pageRows.map((r,i)=>`
+      <div class="rt-history-row" data-i="${i}">
+        <div class="info"><b>${r.centerName}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${monthLabel(r.ym)} · ${r.summary}</div>
+        <div class="ops">
+          <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit-i="${i}">수정</button>
+          <button class="rt-btn rt-btn-danger rt-btn-sm" data-del-i="${i}">삭제</button>
+        </div>
+      </div>`).join('') : `<div class="rt-empty">${q?'검색 결과가 없습니다.':'저장된 기록이 없습니다.'}</div>`;
+
+    $('all-pager').innerHTML = totalPages>1 ? `
+      <button class="rt-btn rt-btn-ghost rt-btn-sm" id="all-prev" ${allViewPage===0?'disabled':''}>◀ 이전</button>
+      <span style="font-size:12px;color:var(--sub);align-self:center;">${allViewPage+1} / ${totalPages} 페이지 (총 ${rows.length}건)</span>
+      <button class="rt-btn rt-btn-ghost rt-btn-sm" id="all-next" ${allViewPage>=totalPages-1?'disabled':''}>다음 ▶</button>
+    ` : (rows.length ? `<span style="font-size:12px;color:var(--sub);">총 ${rows.length}건</span>` : '');
+
+    const prevBtn = $('all-prev'), nextBtn = $('all-next');
+    if(prevBtn) prevBtn.addEventListener('click', ()=>{ allViewPage--; renderAllView(); });
+    if(nextBtn) nextBtn.addEventListener('click', ()=>{ allViewPage++; renderAllView(); });
+
+    $('all-recent').querySelectorAll('[data-edit-i]').forEach(b=>{
+      b.addEventListener('click', ()=>{ routeToHistoryRow(pageRows[Number(b.dataset.editI)]); renderAll(); });
+    });
+    $('all-recent').querySelectorAll('[data-del-i]').forEach(b=>{
+      b.addEventListener('click', async ()=>{
+        const r = pageRows[Number(b.dataset.delI)];
+        if(!confirm(`${r.centerName} · ${monthLabel(r.ym)} 기록을 삭제할까요?`)) return;
+        await deleteHistoryRow(r);
+        toast('삭제했습니다.');
+        renderAllView();
+      });
     });
   }
 
@@ -743,7 +812,7 @@ ${fieldDesc}
   // 센터 상세 뷰
   // ============================================================
   function inputTabLabel(center){
-    return center.type==='billing' ? '수수료청구' : '입력';
+    return center.customInputLabel || (center.type==='billing' ? '수수료청구' : '입력');
   }
 
   async function renderCenterView(){
@@ -751,9 +820,12 @@ ${fieldDesc}
     if(!center){ currentView = {type:'all'}; return renderAll(); }
     const main = $('rt-main');
     const subtabs = [['allhistory','전체이력'], ['input', inputTabLabel(center)]];
-    if(center.bonusEnabled) subtabs.push(['bonus','성과급']);
-    if(center.weeklyCheckEnabled) subtabs.push(['weekly', (center.weeklyCheckConfig&&center.weeklyCheckConfig.shortLabel)||'점검입력']);
-    if(center.simpleReportEnabled) subtabs.push(['simplereport','보고입력']);
+    (center.payoutTypes||[]).forEach(pt=>{ subtabs.push([`bonus:${pt.id}`, pt.label]); });
+    if(center.weeklyCheckEnabled) subtabs.push(['weekly', (center.weeklyCheckConfig&&center.weeklyCheckConfig.tabLabel)||'점검입력']);
+    if(center.simpleReportEnabled){
+      ((center.simpleReportConfig&&center.simpleReportConfig.kinds)||[]).forEach(k=>{ subtabs.push([`report:${k.id}`, k.tabLabel||k.label]); });
+    }
+    if(!currentView.sub) currentView.sub = 'input';
     main.innerHTML = `
       <div class="rt-main-header">
         <div><h2>${center.name}</h2><div class="desc">${TYPE_LABEL[center.type]}${center.type==='billing'?' · '+center.config.rowLabels.join(' / '):''}</div></div>
@@ -779,9 +851,9 @@ ${fieldDesc}
 
     if(currentView.sub==='allhistory') await renderCenterAllHistory(center);
     else if(currentView.sub==='input') await renderCenterInput(center);
-    else if(currentView.sub==='bonus') await renderCenterBonus(center);
+    else if(currentView.sub.startsWith('bonus:')) await renderCenterBonus(center, currentView.sub.slice(6));
     else if(currentView.sub==='weekly') await renderCenterWeeklyCheck(center);
-    else if(currentView.sub==='simplereport') await renderCenterSimpleReport(center);
+    else if(currentView.sub.startsWith('report:')) await renderCenterSimpleReport(center, currentView.sub.slice(7));
   }
 
   // ---------- 전체이력 탭 (모든 모듈 통합, 10개씩 페이지네이션) ----------
@@ -790,34 +862,7 @@ ${fieldDesc}
     const container = $('center-sub-content');
     container.innerHTML = `<div id="allhist-list"></div><div class="rt-actions" id="allhist-pager" style="justify-content:center;"></div>`;
 
-    const recHist = await storageList(`rec__${center.id}__`);
-    const bonusHist = center.bonusEnabled ? await storageList(`bonus__${center.id}__`) : [];
-    const weeklyHist = center.weeklyCheckEnabled ? await storageList(`weekly__${center.id}__`) : [];
-    const reportHist = center.simpleReportEnabled ? await storageList(`report__${center.id}__`) : [];
-
-    let rows = [];
-    recHist.forEach(item=>{
-      const ym = item.key.split('__').pop();
-      let summary = center.type==='perf'
-        ? `인입 ${fmt(item.value.inbound)}건 · 응대율 ${fmt1(item.value.rate)}%`
-        : `공급가액 합계 ${fmt((item.value.supplies||[]).reduce((a,b)=>a+(b||0),0))}원`;
-      rows.push({ module:inputTabLabel(center), sub:'input', ym, summary, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
-    });
-    bonusHist.forEach(item=>{
-      const parts = item.key.split('__'); const ym = parts.pop(); const typeId = parts.pop();
-      const pt = (center.payoutTypes||[]).find(p=>p.id===typeId);
-      rows.push({ module: pt?pt.label:'성과급', sub:'bonus', ym, summary:`${fmt(item.value.amount)}원 · 지급일 ${item.value.paydate||'-'}`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value, payoutTypeId:typeId });
-    });
-    weeklyHist.forEach(item=>{
-      const ym = item.key.split('__').pop();
-      const rowsData = item.value.rows||[];
-      rows.push({ module:'점검입력', sub:'weekly', ym, summary:`점검 ${rowsData.length}회 · 취약인원 합계 ${rowsData.reduce((a,r)=>a+(Number(r.vuln)||0),0)}명`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
-    });
-    reportHist.forEach(item=>{
-      const parts = item.key.split('__'); const ym = parts.pop(); const kindId = parts.pop();
-      const kind = (center.simpleReportConfig&&center.simpleReportConfig.kinds||[]).find(k=>k.id===kindId);
-      rows.push({ module: kind?kind.label:'보고', sub:'simplereport', ym, summary:(item.value.result||'-'), updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value, kindId });
-    });
+    let rows = await collectCenterHistoryRows(center);
 
     const q = searchQuery.trim().toLowerCase();
     if(q){
@@ -831,12 +876,12 @@ ${fieldDesc}
     if(allHistoryPage < 0) allHistoryPage = 0;
     const pageRows = rows.slice(allHistoryPage*pageSize, allHistoryPage*pageSize+pageSize);
 
-    $('allhist-list').innerHTML = pageRows.length ? pageRows.map(r=>`
+    $('allhist-list').innerHTML = pageRows.length ? pageRows.map((r,i)=>`
       <div class="rt-history-row">
         <div class="info"><b>${monthLabel(r.ym)}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${r.summary}</div>
         <div class="ops">
-          <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit-sub="${r.sub}" data-edit-ym="${r.ym}" data-edit-type="${r.payoutTypeId||r.kindId||''}">수정</button>
-          <button class="rt-btn rt-btn-danger rt-btn-sm" data-del-sub="${r.sub}" data-del-ym="${r.ym}" data-del-type="${r.payoutTypeId||r.kindId||''}">삭제</button>
+          <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit-i="${i}">수정</button>
+          <button class="rt-btn rt-btn-danger rt-btn-sm" data-del-i="${i}">삭제</button>
         </div>
       </div>`).join('') : `<div class="rt-empty">${q?'검색 결과가 없습니다.':'저장된 기록이 없습니다.'}</div>`;
 
@@ -850,25 +895,14 @@ ${fieldDesc}
     if(prevBtn) prevBtn.addEventListener('click', ()=>{ allHistoryPage--; renderCenterAllHistory(center); });
     if(nextBtn) nextBtn.addEventListener('click', ()=>{ allHistoryPage++; renderCenterAllHistory(center); });
 
-    container.querySelectorAll('[data-edit-sub]').forEach(b=>{
-      b.addEventListener('click', ()=>{
-        const sub = b.dataset.editSub, ym = b.dataset.editYm, typeId = b.dataset.editType;
-        if(sub==='input'){ inputMonth = {centerId:center.id, ym}; }
-        else if(sub==='bonus'){ bonusMonth = {centerId:center.id, ym, payoutTypeId:typeId}; }
-        else if(sub==='weekly'){ weeklyMonth = {centerId:center.id, ym}; }
-        else if(sub==='simplereport'){ reportMonth = {centerId:center.id, ym, kindId:typeId}; }
-        currentView.sub = sub;
-        renderAll();
-      });
+    container.querySelectorAll('[data-edit-i]').forEach(b=>{
+      b.addEventListener('click', ()=>{ routeToHistoryRow(pageRows[Number(b.dataset.editI)]); renderAll(); });
     });
-    container.querySelectorAll('[data-del-sub]').forEach(b=>{
+    container.querySelectorAll('[data-del-i]').forEach(b=>{
       b.addEventListener('click', async ()=>{
-        const sub = b.dataset.delSub, ym = b.dataset.delYm, typeId = b.dataset.delType;
-        if(!confirm(`${monthLabel(ym)} 기록을 삭제할까요?`)) return;
-        if(sub==='input') await storageDelete(`rec__${center.id}__${ym}`);
-        else if(sub==='bonus') await storageDelete(`bonus__${center.id}__${typeId}__${ym}`);
-        else if(sub==='weekly') await storageDelete(`weekly__${center.id}__${ym}`);
-        else if(sub==='simplereport') await storageDelete(`report__${center.id}__${typeId}__${ym}`);
+        const r = pageRows[Number(b.dataset.delI)];
+        if(!confirm(`${monthLabel(r.ym)} 기록을 삭제할까요?`)) return;
+        await deleteHistoryRow(r);
         toast('삭제했습니다.');
         renderCenterAllHistory(center);
       });
@@ -1389,22 +1423,19 @@ ${fieldDesc}
 
   // ---------- 성과급 탭 ----------
   let bonusMonth = null; // {centerId, ym, payoutTypeId}
-  async function renderCenterBonus(center){
+  async function renderCenterBonus(center, payoutTypeId){
     const container = $('center-sub-content');
     const types = center.payoutTypes || [];
-    if(!types.length){
-      container.innerHTML = `<div class="rt-empty">등록된 지급유형이 없습니다. "센터 설정"에서 지급유형을 추가해주세요.</div>`;
+    const pt0 = types.find(t=>t.id===payoutTypeId);
+    if(!pt0){
+      container.innerHTML = `<div class="rt-empty">등록된 지급유형을 찾을 수 없습니다. "센터 설정"에서 확인해주세요.</div>`;
       return;
     }
     const defaultYm = new Date().toISOString().slice(0,7);
-    if(!bonusMonth || bonusMonth.centerId!==center.id){ bonusMonth = {centerId:center.id, ym:defaultYm, payoutTypeId:types[0].id}; }
-    if(!types.find(t=>t.id===bonusMonth.payoutTypeId)) bonusMonth.payoutTypeId = types[0].id;
+    if(!bonusMonth || bonusMonth.centerId!==center.id || bonusMonth.payoutTypeId!==payoutTypeId){ bonusMonth = {centerId:center.id, ym:defaultYm, payoutTypeId}; }
 
     container.innerHTML = `
       <div class="rt-row">
-        <div class="rt-field" style="max-width:220px;"><label>지급유형</label>
-          <select id="bn-type">${types.map(t=>`<option value="${t.id}" ${t.id===bonusMonth.payoutTypeId?'selected':''}>${t.label}</option>`).join('')}</select>
-        </div>
         <div class="rt-field" style="max-width:220px;"><label>기준월</label>
           <div style="display:flex;gap:4px;align-items:center;">
             <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="bn-month-prev" style="padding:8px 10px;">◀</button>
@@ -1468,7 +1499,6 @@ ${fieldDesc}
       return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     }
 
-    $('bn-type').addEventListener('change', async ()=>{ bonusMonth.payoutTypeId = $('bn-type').value; await renderFieldsAndLoad(); });
     $('bn-month').addEventListener('change', async ()=>{ bonusMonth.ym = $('bn-month').value; await renderFieldsAndLoad(); });
     $('bn-month-prev').addEventListener('click', async ()=>{ bonusMonth.ym = shiftMonth(bonusMonth.ym,-1); $('bn-month').value = bonusMonth.ym; await renderFieldsAndLoad(); });
     $('bn-month-next').addEventListener('click', async ()=>{ bonusMonth.ym = shiftMonth(bonusMonth.ym,1); $('bn-month').value = bonusMonth.ym; await renderFieldsAndLoad(); });
@@ -1658,19 +1688,16 @@ ${fieldDesc}
       return body;
     },
   };
-  async function renderCenterSimpleReport(center){
+  async function renderCenterSimpleReport(center, fixedKindId){
     const container = $('center-sub-content');
     const cfg = center.simpleReportConfig || {kinds:[]};
-    if(!cfg.kinds.length){ container.innerHTML = `<div class="rt-empty">등록된 보고서 종류가 없습니다.</div>`; return; }
+    const kind0 = cfg.kinds.find(k=>k.id===fixedKindId);
+    if(!kind0){ container.innerHTML = `<div class="rt-empty">등록된 보고서 종류를 찾을 수 없습니다.</div>`; return; }
     const defaultYm = new Date().toISOString().slice(0,7);
-    if(!reportMonth || reportMonth.centerId!==center.id){ reportMonth = {centerId:center.id, ym:defaultYm, kindId:cfg.kinds[0].id}; }
-    if(!cfg.kinds.find(k=>k.id===reportMonth.kindId)) reportMonth.kindId = cfg.kinds[0].id;
+    if(!reportMonth || reportMonth.centerId!==center.id || reportMonth.kindId!==fixedKindId){ reportMonth = {centerId:center.id, ym:defaultYm, kindId:fixedKindId}; }
 
     container.innerHTML = `
       <div class="rt-row">
-        <div class="rt-field" style="max-width:240px;"><label>보고서 종류</label>
-          <select id="rp-kind">${cfg.kinds.map(k=>`<option value="${k.id}" ${k.id===reportMonth.kindId?'selected':''}>${k.label}</option>`).join('')}</select>
-        </div>
         <div class="rt-field" style="max-width:220px;"><label>기준월</label>
           <div style="display:flex;gap:4px;align-items:center;">
             <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-month-prev" style="padding:8px 10px;">◀</button>
@@ -1720,7 +1747,6 @@ ${fieldDesc}
       return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     }
 
-    $('rp-kind').addEventListener('change', async ()=>{ reportMonth.kindId = $('rp-kind').value; await renderFieldsAndLoad(); });
     $('rp-month').addEventListener('change', async ()=>{ reportMonth.ym = $('rp-month').value; await renderFieldsAndLoad(); });
     $('rp-month-prev').addEventListener('click', async ()=>{ reportMonth.ym = shiftMonth(reportMonth.ym,-1); $('rp-month').value = reportMonth.ym; await renderFieldsAndLoad(); });
     $('rp-month-next').addEventListener('click', async ()=>{ reportMonth.ym = shiftMonth(reportMonth.ym,1); $('rp-month').value = reportMonth.ym; await renderFieldsAndLoad(); });
@@ -1769,6 +1795,7 @@ ${fieldDesc}
 
           <div class="rt-modal-section-title">① 기본 정보</div>
           <div class="rt-field"><label>센터 이름</label><input type="text" id="m-name" value="${c.name}"></div>
+          <div class="rt-field"><label>입력 탭 이름 (비워두면 자동: 실적형="입력", 청구형="수수료청구")</label><input type="text" id="m-input-label" value="${c.customInputLabel||''}" placeholder="예: 수수료청구"></div>
           <div class="rt-field"><label>유형</label>
             <select id="m-type">
               <option value="perf" ${c.type==='perf'?'selected':''}>실적 보고형 — 인입호·응대율 등 6개 지표를 전월/당월 비교</option>
@@ -1808,8 +1835,16 @@ ${fieldDesc}
           <div class="rt-modal-section-title">④ 추가 기능</div>
           <div class="rt-checkbox-row"><input type="checkbox" id="m-weekly" ${c.weeklyCheckEnabled?'checked':''}><label for="m-weekly">이미지 모니터링 점검 탭 사용</label></div>
           <div class="rt-hint">매주 지정 요일 기준으로 점검표를 자동 생성하는 탭입니다. (예: KB부천 개인정보 이미지파일 점검)</div>
+          <div id="m-weekly-fields" style="display:${c.weeklyCheckEnabled?'':'none'}; margin-bottom:10px;">
+            <div class="rt-field"><label>탭 이름</label><input type="text" id="m-weekly-label" value="${(c.weeklyCheckConfig&&c.weeklyCheckConfig.tabLabel)||'점검입력'}"></div>
+          </div>
           <div class="rt-checkbox-row"><input type="checkbox" id="m-simplereport" ${c.simpleReportEnabled?'checked':''}><label for="m-simplereport">정기 점검·평가 보고 탭 사용</label></div>
           <div class="rt-hint">자체점검·업무평가처럼 단일 값으로 채우는 정기 보고서 탭입니다. (예: KB부천 자체점검/대출상담사평가)</div>
+          <div id="m-report-fields" style="display:${c.simpleReportEnabled?'':'none'};">
+            ${((c.simpleReportConfig&&c.simpleReportConfig.kinds)||[]).map((k,i)=>`
+              <div class="rt-field"><label>탭 이름 — ${k.label}</label><input type="text" class="m-report-label" data-i="${i}" value="${k.tabLabel||k.label}"></div>
+            `).join('')}
+          </div>
 
           <div class="rt-actions">
             <button class="rt-btn rt-btn-primary" id="m-save">저장</button>
@@ -1835,6 +1870,8 @@ ${fieldDesc}
     $('m-hascontract').addEventListener('change', ()=>{ $('m-contract-wrap').style.display = $('m-hascontract').checked ? '' : 'none'; });
     $('m-hasauto').addEventListener('change', ()=>{ $('m-unitprice-wrap').style.display = $('m-hasauto').checked ? '' : 'none'; });
     $('m-bonus').addEventListener('change', ()=>{ $('m-bonus-fields').style.display = $('m-bonus').checked ? '' : 'none'; });
+    $('m-weekly').addEventListener('change', ()=>{ $('m-weekly-fields').style.display = $('m-weekly').checked ? '' : 'none'; });
+    $('m-simplereport').addEventListener('change', ()=>{ $('m-report-fields').style.display = $('m-simplereport').checked ? '' : 'none'; });
     $('m-cancel').addEventListener('click', ()=>{ root.innerHTML=''; });
     $('modal-bg').addEventListener('click', (e)=>{ if(e.target.id==='modal-bg') root.innerHTML=''; });
 
@@ -1902,8 +1939,16 @@ ${fieldDesc}
         };
       }
       const patch = { name, type, config, bonusEnabled, payoutTypes, weeklyCheckEnabled, simpleReportEnabled };
-      if(weeklyCheckEnabled && !c.weeklyCheckConfig) patch.weeklyCheckConfig = DEFAULT_WEEKLY_CONFIG;
-      if(simpleReportEnabled && !c.simpleReportConfig) patch.simpleReportConfig = DEFAULT_SIMPLEREPORT_CONFIG;
+      patch.customInputLabel = $('m-input-label').value.trim();
+      if(weeklyCheckEnabled){
+        patch.weeklyCheckConfig = Object.assign({}, c.weeklyCheckConfig||DEFAULT_WEEKLY_CONFIG, { tabLabel: $('m-weekly-label') ? $('m-weekly-label').value.trim() : '점검입력' });
+      }
+      if(simpleReportEnabled){
+        const baseCfg = c.simpleReportConfig || DEFAULT_SIMPLEREPORT_CONFIG;
+        const labelInputs = [...document.querySelectorAll('.m-report-label')];
+        const kinds = (baseCfg.kinds||[]).map((k,i)=>Object.assign({}, k, { tabLabel: labelInputs[i] ? labelInputs[i].value.trim() : k.label }));
+        patch.simpleReportConfig = Object.assign({}, baseCfg, { kinds });
+      }
       if(isEdit){
         Object.assign(existing, patch);
       }else{
@@ -1932,7 +1977,11 @@ ${fieldDesc}
   $('nav-backup').addEventListener('click', ()=>{ currentView = {type:'backup'}; renderAll(); });
   $('btn-add-center').addEventListener('click', ()=>openCenterModal(null));
   $('btn-customize').addEventListener('click', ()=>{ currentView = {type:'customize'}; renderAll(); });
-  $('side-search').addEventListener('input', ()=>{ searchQuery = $('side-search').value; renderAll(); });
+  $('side-search').addEventListener('input', ()=>{
+    searchQuery = $('side-search').value;
+    if(searchQuery.trim() && currentView.type!=='all'){ currentView = {type:'all'}; }
+    renderAll();
+  });
 
   (async function init(){
     await loadCenters();
