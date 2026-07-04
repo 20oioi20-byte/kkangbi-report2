@@ -219,6 +219,57 @@
     const [y,m] = ym.split('-').map(Number);
     return `${y}. ${m}. 1. ~ ${y}. ${m}. ${lastDay(ym)}.`;
   }
+
+  // ---------- 범용 주기(월/분기/반기/연간) 유틸 ----------
+  function defaultPeriodId(periodType){
+    const now = new Date();
+    const y = now.getFullYear();
+    if(periodType==='quarter') return `${y}-Q${Math.floor(now.getMonth()/3)+1}`;
+    if(periodType==='half') return `${y}-H${now.getMonth()<6?1:2}`;
+    if(periodType==='year') return `${y}`;
+    return `${y}-${String(now.getMonth()+1).padStart(2,'0')}`; // month
+  }
+  function periodShift(periodType, id, delta){
+    if(periodType==='quarter'){
+      let [y,q] = id.split('-Q').map(Number);
+      q += delta; while(q<1){q+=4;y--;} while(q>4){q-=4;y++;}
+      return `${y}-Q${q}`;
+    }
+    if(periodType==='half'){
+      let [y,h] = id.split('-H').map(Number);
+      h += delta; while(h<1){h+=2;y--;} while(h>2){h-=2;y++;}
+      return `${y}-H${h}`;
+    }
+    if(periodType==='year') return String(Number(id)+delta);
+    const [y,m] = id.split('-').map(Number);
+    const d = new Date(y, m-1+delta, 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  }
+  function periodLabel(periodType, id){
+    if(periodType==='quarter'){ const [y,q]=id.split('-Q'); return `${y}년 ${q}분기`; }
+    if(periodType==='half'){ const [y,h]=id.split('-H'); return `${y}년 ${h==='1'?'상반기':'하반기'}`; }
+    if(periodType==='year') return `${id}년`;
+    return monthLabel(id);
+  }
+  function periodDateRangeText(periodType, id){
+    if(periodType==='quarter'){
+      const [y,q] = id.split('-Q').map(Number);
+      const startM = (q-1)*3;
+      const start = new Date(y, startM, 1), end = new Date(y, startM+3, 0);
+      return `${y}. ${startM+1}. 1. ~ ${y}. ${end.getMonth()+1}. ${end.getDate()}. (${y}년 ${q}분기)`;
+    }
+    if(periodType==='half'){
+      const [y,h] = id.split('-H').map(Number);
+      const startM = h===1?0:6;
+      const end = new Date(y, startM+6, 0);
+      return `${y}. ${startM+1}. 1. ~ ${y}. ${end.getMonth()+1}. ${end.getDate()}. (${y}년 ${h===1?'상반기':'하반기'})`;
+    }
+    if(periodType==='year'){
+      return `${id}. 1. 1. ~ ${id}. 12. 31.`;
+    }
+    const [y,m] = id.split('-').map(Number);
+    return `${y}. ${m}. 1. ~ ${y}. ${m}. ${lastDay(id)}.`;
+  }
   function arrowSpan(diff, unit, decimals){
     if(diff===null||diff===undefined||isNaN(diff)) return '<span class="rt-arrow-flat">-</span>';
     const val = decimals ? Math.abs(diff).toFixed(decimals) : fmt(Math.abs(diff));
@@ -394,9 +445,12 @@ ${fieldDesc}
 
   async function loadCenters(){
     const saved = await storageGet('centers');
-    if(saved && saved.length){ centers = saved.map(migrateCenter); return; }
-    centers = defaultCenters();
-    await storageSet('centers', centers);
+    if(saved && saved.length){
+      centers = saved.map(migrateCenter);
+    }else{
+      centers = defaultCenters().map(migrateCenter);
+    }
+    await storageSet('centers', centers); // 마이그레이션(신규 모듈 백필) 결과를 즉시 저장
   }
   function defaultCenters(){
     return [
@@ -466,6 +520,120 @@ ${fieldDesc}
     }
     if(c.weeklyCheckEnabled===undefined) c.weeklyCheckEnabled = false;
     if(c.simpleReportEnabled===undefined) c.simpleReportEnabled = false;
+    if(c.eventLogEnabled===undefined) c.eventLogEnabled = false;
+
+    // KB부천센터는 처음 만들어진 이후 추가된 신규 문서(포상금/점검/자체점검/평가보고) 모듈을
+    // 기존 저장 데이터에도 자동으로 채워넣는다 (한 번만 적용, 이미 있으면 건드리지 않음)
+    if(c.name === 'KB손해보험 제휴CS사업(부천센터)'){
+      if(c.bonusEnabled && !c.payoutTypes.find(p=>p.id==='reward')){
+        c.payoutTypes.push({ id:'reward', label:'포상금(정착지원)', headcountEnabled:true,
+          targetText:'KB손해보험 제휴CS(부천센터) 소속직원', fundText:'신규 입사자 정착지원금 및 지인추천 포상',
+          budgetLine:'기타포상비', payDay:10 });
+      }
+      if(!c.weeklyCheckEnabled){
+        c.weeklyCheckEnabled = true;
+        c.weeklyCheckConfig = c.weeklyCheckConfig || {
+          title:'개인정보가 포함된 이미지 파일 모니터링 점검', desc:'PC 바탕화면에 이미지 저장 권한 부여된 제지급 업무 직원',
+          weekday:3, team:'제휴지원팀', defaultTarget:3, defaultChecked:3, defaultVuln:0, defaultNote:'특이사항 없음',
+        };
+      }
+      if(!c.simpleReportEnabled){
+        c.simpleReportEnabled = true;
+        c.simpleReportConfig = c.simpleReportConfig || {
+          kinds:[
+            { id:'selfcheck', label:'개인정보처리 수탁자 자체점검', targetLabel:'점검 대상', targetDefault:'KB손해보험 고객센터',
+              fields:[
+                {id:'checkDate', label:'점검 일시', type:'date'},
+                {id:'headcount', label:'보안점검 총 인원 (명)', type:'number'},
+                {id:'result', label:'점검 결과', type:'text', default:'특이사항 없음'},
+                {id:'offCount', label:'점검 당일 휴무자 (명)', type:'number'},
+                {id:'extraCheckDate', label:'추가 점검일', type:'date'},
+              ] },
+            { id:'loaneval', label:'대출상담사 업무수행 평가', targetLabel:'평가자', targetDefault:'주식회사 케이티아이에스',
+              fields:[
+                {id:'headcount', label:'평가 대상 대출상담사 인원 (명)', type:'number'},
+                {id:'result', label:'평가 결과', type:'text', default:'위반 사항이나 특이사항 없음'},
+              ] },
+          ]
+        };
+      }
+    }
+
+    // KB손해보험 장기계약정비센터: 자체점검 + 이미지 모니터링 점검 백필
+    if(c.name === 'KB손해보험 장기계약정비센터'){
+      const existingKinds = (c.simpleReportConfig && c.simpleReportConfig.kinds) || [];
+      if(!existingKinds.find(k=>k.id==='selfcheck')){
+        c.simpleReportEnabled = true;
+        const newKind = { id:'selfcheck', label:'개인정보처리 수탁자 자체점검', targetLabel:'점검 대상', targetDefault:'KB손해보험 고객센터',
+          fields:[
+            {id:'checkDate', label:'점검 일시', type:'date'},
+            {id:'headcount', label:'보안점검 총 인원 (명)', type:'number'},
+            {id:'result', label:'점검 결과', type:'text', default:'특이사항 없음'},
+            {id:'offCount', label:'점검 당일 휴무자 (명)', type:'number'},
+            {id:'extraCheckDate', label:'추가 점검일', type:'date'},
+          ] };
+        c.simpleReportConfig = { kinds: existingKinds.concat([newKind]) };
+      }
+      if(!c.weeklyCheckEnabled){
+        c.weeklyCheckEnabled = true;
+        c.weeklyCheckConfig = c.weeklyCheckConfig || {
+          title:'개인정보가 포함된 이미지 파일 모니터링 점검', desc:'PC 바탕화면에 이미지 저장 권한 부여된 이재배서팀 직원',
+          weekday:3, team:'이재배서팀', defaultTarget:15, defaultChecked:15, defaultVuln:0, defaultNote:'특이사항 없음',
+        };
+      }
+    }
+
+    // 평택시 민원콜센터도 이후 추가된 신규 문서(시민만족도·교육점검·사업비제출·채용공고·채용알림)를 자동 백필
+    if(c.name === '평택시 민원콜센터'){
+      const existingKinds = (c.simpleReportConfig && c.simpleReportConfig.kinds) || [];
+      const needSurvey = !existingKinds.find(k=>k.id==='survey');
+      const needAudit = !existingKinds.find(k=>k.id==='audit');
+      const needBudget = !existingKinds.find(k=>k.id==='budget');
+      if(needSurvey || needAudit || needBudget){
+        c.simpleReportEnabled = true;
+        const newKinds = [
+          { id:'survey', label:'시민만족도 조사결과 보고', periodType:'half', targetLabel:'조사대상', targetDefault:'콜센터 이용시민 중 설문조사 동의자',
+            fields:[
+              {id:'surveyStart', label:'조사 시작일', type:'date'},
+              {id:'surveyEnd', label:'조사 종료일', type:'date'},
+              {id:'totalCount', label:'조사대상 건수', type:'number'},
+              {id:'completeCount', label:'응답 완료 인원 (명)', type:'number'},
+              {id:'result', label:'조사결과', type:'text', default:'상세내역 붙임 참조'},
+            ] },
+          { id:'audit', label:'개인정보처리업무 교육·실태점검', periodType:'year', targetLabel:'점검대상', targetDefault:'평택시 민원상담콜센터',
+            fields:[
+              {id:'result', label:'실태점검 결과', type:'text', default:'이상 없음'},
+            ] },
+          { id:'budget', label:'사업비 지출 투명성 자료 제출', periodType:'quarter', targetLabel:'제출내역', targetDefault:'인건비 지급 내역, 4대보험료 납부 내역',
+            fields:[
+              {id:'note', label:'비고', type:'text', default:''},
+            ] },
+        ];
+        c.simpleReportConfig = { kinds: existingKinds.concat(newKinds.filter(k=>!existingKinds.find(e=>e.id===k.id))) };
+      }
+      const existingLogKinds = (c.eventLogConfig && c.eventLogConfig.kinds) || [];
+      const needHireReq = !existingLogKinds.find(k=>k.id==='hire-request');
+      const needHireNotice = !existingLogKinds.find(k=>k.id==='hire-notice');
+      if(needHireReq || needHireNotice){
+        c.eventLogEnabled = true;
+        const newLogKinds = [
+          { id:'hire-request', label:'채용공고 협조요청', tabLabel:'채용공고', hasRows:false,
+            fields:[
+              {id:'qualification', label:'자격요건', type:'textarea', default:'○ 학력 : 고졸이상\n○ 평택 시민 우대\n○ 공공 및 지자체 근무 또는 인바운드 상담 업무 6개월 이상'},
+              {id:'startDate', label:'모집 시작일', type:'date'},
+              {id:'period', label:'모집기간(종료조건)', type:'text', default:'채용시까지'},
+            ] },
+          { id:'hire-notice', label:'채용알림', tabLabel:'채용알림', hasRows:true, rowsTitle:'채용자 명단',
+            rowFields:[ {id:'name', label:'성명'}, {id:'career', label:'경력사항'} ],
+            fields:[
+              {id:'headcount', label:'채용인원', type:'number', default:1},
+              {id:'hireDate', label:'채용일자', type:'date'},
+              {id:'criteria', label:'채용기준', type:'text', default:'제안서 56페이지 상담사 자격 및 선발기준 적용'},
+            ] },
+        ];
+        c.eventLogConfig = { kinds: existingLogKinds.concat(newLogKinds.filter(k=>!existingLogKinds.find(e=>e.id===k.id))) };
+      }
+    }
     return c;
   }
   async function saveCenters(){ await storageSet('centers', centers); }
@@ -501,6 +669,7 @@ ${fieldDesc}
     const bonusHist = center.bonusEnabled ? await storageList(`bonus__${center.id}__`) : [];
     const weeklyHist = center.weeklyCheckEnabled ? await storageList(`weekly__${center.id}__`) : [];
     const reportHist = center.simpleReportEnabled ? await storageList(`report__${center.id}__`) : [];
+    const eventHist = center.eventLogEnabled ? await storageList(`eventlog__${center.id}__`) : [];
 
     const rows = [];
     recHist.forEach(item=>{
@@ -508,22 +677,30 @@ ${fieldDesc}
       let summary = center.type==='perf'
         ? `인입 ${fmt(item.value.inbound)}건 · 응대율 ${fmt1(item.value.rate)}%`
         : `공급가액 합계 ${fmt((item.value.supplies||[]).reduce((a,b)=>a+(b||0),0))}원`;
-      rows.push({ centerId:center.id, centerName:center.name, module:inputTabLabel(center), sub:'input', ym, summary, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+      rows.push({ centerId:center.id, centerName:center.name, module:inputTabLabel(center), sub:'input', ym, periodDisplay:monthLabel(ym), summary, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
     });
     bonusHist.forEach(item=>{
       const parts = item.key.split('__'); const ym = parts.pop(); const typeId = parts.pop();
       const pt = (center.payoutTypes||[]).find(p=>p.id===typeId);
-      rows.push({ centerId:center.id, centerName:center.name, module: pt?pt.label:'성과급', sub:`bonus:${typeId}`, ym, summary:`${fmt(item.value.amount)}원 · 지급일 ${item.value.paydate||'-'}`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+      rows.push({ centerId:center.id, centerName:center.name, module: pt?pt.label:'성과급', sub:`bonus:${typeId}`, ym, periodDisplay:monthLabel(ym), summary:`${fmt(item.value.amount)}원 · 지급일 ${item.value.paydate||'-'}`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
     });
     weeklyHist.forEach(item=>{
       const ym = item.key.split('__').pop();
       const rowsData = item.value.rows||[];
-      rows.push({ centerId:center.id, centerName:center.name, module:(center.weeklyCheckConfig&&center.weeklyCheckConfig.tabLabel)||'점검입력', sub:'weekly', ym, summary:`점검 ${rowsData.length}회 · 취약인원 합계 ${rowsData.reduce((a,r)=>a+(Number(r.vuln)||0),0)}명`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+      rows.push({ centerId:center.id, centerName:center.name, module:(center.weeklyCheckConfig&&center.weeklyCheckConfig.tabLabel)||'점검입력', sub:'weekly', ym, periodDisplay:monthLabel(ym), summary:`점검 ${rowsData.length}회 · 취약인원 합계 ${rowsData.reduce((a,r)=>a+(Number(r.vuln)||0),0)}명`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
     });
     reportHist.forEach(item=>{
       const parts = item.key.split('__'); const ym = parts.pop(); const kindId = parts.pop();
       const kind = (center.simpleReportConfig&&center.simpleReportConfig.kinds||[]).find(k=>k.id===kindId);
-      rows.push({ centerId:center.id, centerName:center.name, module: kind?(kind.tabLabel||kind.label):'보고', sub:`report:${kindId}`, ym, summary:(item.value.result||'-'), updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+      const pType = kind ? (kind.periodType||'month') : 'month';
+      rows.push({ centerId:center.id, centerName:center.name, module: kind?(kind.tabLabel||kind.label):'보고', sub:`report:${kindId}`, ym, periodDisplay:periodLabel(pType, ym), summary:(item.value.result||'-'), updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    eventHist.forEach(item=>{
+      const parts = item.key.split('__'); const entryId = parts.pop(); const kindId = parts.pop();
+      const kind = (center.eventLogConfig&&center.eventLogConfig.kinds||[]).find(k=>k.id===kindId);
+      const d = item.value.entryDate || (item.value.savedAt||'').slice(0,10);
+      let summary = kind && kind.hasRows ? `${(item.value.rows||[]).length}명` : (kind ? (item.value[kind.fields[0].id]||'-') : '-');
+      rows.push({ centerId:center.id, centerName:center.name, module: kind?(kind.tabLabel||kind.label):'로그', sub:`eventlog:${kindId}`, ym:entryId, periodDisplay:d||'-', summary, updatedAt:item.value.savedAt||item.updated_at||d, raw:item.value });
     });
     return rows;
   }
@@ -535,6 +712,7 @@ ${fieldDesc}
     else if(r.sub.startsWith('bonus:')){ bonusMonth = {centerId:center.id, ym:r.ym, payoutTypeId:r.sub.slice(6)}; }
     else if(r.sub==='weekly'){ weeklyMonth = {centerId:center.id, ym:r.ym}; }
     else if(r.sub.startsWith('report:')){ reportMonth = {centerId:center.id, ym:r.ym, kindId:r.sub.slice(7)}; }
+    else if(r.sub.startsWith('eventlog:')){ eventLogState = {centerId:center.id, kindId:r.sub.slice(9), entryId:r.ym}; }
     currentView = { type:'center', id:center.id, sub:r.sub };
   }
   async function deleteHistoryRow(r){
@@ -544,6 +722,7 @@ ${fieldDesc}
     else if(r.sub.startsWith('bonus:')) await storageDelete(`bonus__${center.id}__${r.sub.slice(6)}__${r.ym}`);
     else if(r.sub==='weekly') await storageDelete(`weekly__${center.id}__${r.ym}`);
     else if(r.sub.startsWith('report:')) await storageDelete(`report__${center.id}__${r.sub.slice(7)}__${r.ym}`);
+    else if(r.sub.startsWith('eventlog:')) await storageDelete(`eventlog__${center.id}__${r.sub.slice(9)}__${r.ym}`);
   }
 
   let allViewPage = 0;
@@ -560,7 +739,7 @@ ${fieldDesc}
 
     const q = searchQuery.trim().toLowerCase();
     if(q){
-      rows = rows.filter(r=> JSON.stringify(r.raw).toLowerCase().includes(q) || r.ym.includes(q) || r.module.toLowerCase().includes(q) || r.centerName.toLowerCase().includes(q) || monthLabel(r.ym).toLowerCase().includes(q));
+      rows = rows.filter(r=> JSON.stringify(r.raw).toLowerCase().includes(q) || r.ym.includes(q) || r.module.toLowerCase().includes(q) || r.centerName.toLowerCase().includes(q) || (r.periodDisplay||"").toLowerCase().includes(q));
     }
     rows.sort((a,b)=> (a.updatedAt < b.updatedAt ? 1 : -1));
 
@@ -572,7 +751,7 @@ ${fieldDesc}
 
     $('all-recent').innerHTML = pageRows.length ? pageRows.map((r,i)=>`
       <div class="rt-history-row" data-i="${i}">
-        <div class="info"><b>${r.centerName}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${monthLabel(r.ym)} · ${r.summary}</div>
+        <div class="info"><b>${r.centerName}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${r.periodDisplay} · ${r.summary}</div>
         <div class="ops">
           <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit-i="${i}">수정</button>
           <button class="rt-btn rt-btn-danger rt-btn-sm" data-del-i="${i}">삭제</button>
@@ -595,7 +774,7 @@ ${fieldDesc}
     $('all-recent').querySelectorAll('[data-del-i]').forEach(b=>{
       b.addEventListener('click', async ()=>{
         const r = pageRows[Number(b.dataset.delI)];
-        if(!confirm(`${r.centerName} · ${monthLabel(r.ym)} 기록을 삭제할까요?`)) return;
+        if(!confirm(`${r.centerName} · ${r.periodDisplay} 기록을 삭제할까요?`)) return;
         await deleteHistoryRow(r);
         toast('삭제했습니다.');
         renderAllView();
@@ -825,6 +1004,9 @@ ${fieldDesc}
     if(center.simpleReportEnabled){
       ((center.simpleReportConfig&&center.simpleReportConfig.kinds)||[]).forEach(k=>{ subtabs.push([`report:${k.id}`, k.tabLabel||k.label]); });
     }
+    if(center.eventLogEnabled){
+      ((center.eventLogConfig&&center.eventLogConfig.kinds)||[]).forEach(k=>{ subtabs.push([`eventlog:${k.id}`, k.tabLabel||k.label]); });
+    }
     if(!currentView.sub) currentView.sub = 'input';
     main.innerHTML = `
       <div class="rt-main-header">
@@ -854,6 +1036,7 @@ ${fieldDesc}
     else if(currentView.sub.startsWith('bonus:')) await renderCenterBonus(center, currentView.sub.slice(6));
     else if(currentView.sub==='weekly') await renderCenterWeeklyCheck(center);
     else if(currentView.sub.startsWith('report:')) await renderCenterSimpleReport(center, currentView.sub.slice(7));
+    else if(currentView.sub.startsWith('eventlog:')) await renderCenterEventLog(center, currentView.sub.slice(9));
   }
 
   // ---------- 전체이력 탭 (모든 모듈 통합, 10개씩 페이지네이션) ----------
@@ -866,7 +1049,7 @@ ${fieldDesc}
 
     const q = searchQuery.trim().toLowerCase();
     if(q){
-      rows = rows.filter(r=> JSON.stringify(r.raw).toLowerCase().includes(q) || r.ym.includes(q) || r.module.toLowerCase().includes(q) || monthLabel(r.ym).toLowerCase().includes(q));
+      rows = rows.filter(r=> JSON.stringify(r.raw).toLowerCase().includes(q) || r.ym.includes(q) || r.module.toLowerCase().includes(q) || (r.periodDisplay||"").toLowerCase().includes(q));
     }
     rows.sort((a,b)=> (a.updatedAt < b.updatedAt ? 1 : -1));
 
@@ -878,7 +1061,7 @@ ${fieldDesc}
 
     $('allhist-list').innerHTML = pageRows.length ? pageRows.map((r,i)=>`
       <div class="rt-history-row">
-        <div class="info"><b>${monthLabel(r.ym)}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${r.summary}</div>
+        <div class="info"><b>${r.periodDisplay}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${r.summary}</div>
         <div class="ops">
           <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit-i="${i}">수정</button>
           <button class="rt-btn rt-btn-danger rt-btn-sm" data-del-i="${i}">삭제</button>
@@ -901,7 +1084,7 @@ ${fieldDesc}
     container.querySelectorAll('[data-del-i]').forEach(b=>{
       b.addEventListener('click', async ()=>{
         const r = pageRows[Number(b.dataset.delI)];
-        if(!confirm(`${monthLabel(r.ym)} 기록을 삭제할까요?`)) return;
+        if(!confirm(`${r.periodDisplay} 기록을 삭제할까요?`)) return;
         await deleteHistoryRow(r);
         toast('삭제했습니다.');
         renderCenterAllHistory(center);
@@ -1669,8 +1852,8 @@ ${fieldDesc}
   let reportMonth = null; // {centerId, ym, kindId}
   const SIMPLE_REPORT_PARAGRAPH = {
     selfcheck: (center, kind, ctx, v) => {
-      let body = `제 목 : KB손해보험 개인정보처리 수탁자 자체점검 결과 제출(${ctx.ymShort})\n\n`;
-      body += `2. ${kind.targetDefault}의 ${ctx.ymLong} 개인정보처리 점검 결과를 제출합니다.\n`;
+      let body = `제 목 : ${center.name} 개인정보처리 수탁자 자체점검 결과 제출(${ctx.ymShort})\n\n`;
+      body += `2. ${center.name}의 ${ctx.ymLong} 개인정보처리 점검 결과를 제출합니다.\n`;
       body += `가. 점검 대상 : ${kind.targetDefault}\n`;
       body += `나. 점검 일시 : ${v.checkDate || '-'}\n`;
       body += `다. 점검 방법\n  ㅇ 보안점검 총 ${v.headcount||'-'}명\n  ㅇ 정보보안 개인생활 체크리스트 수기 작성\n  ㅇ 센터 내 ktis 정보보호 체크리스트 자가 점검\n`;
@@ -1687,32 +1870,65 @@ ${fieldDesc}
       body += `라. 평가자(대리중개업자) : ${kind.targetDefault}\n`;
       return body;
     },
+    survey: (center, kind, ctx, v) => {
+      let body = `제 목 : ${center.name} 시민만족도 조사결과 보고(${ctx.ymShort})\n\n`;
+      body += `2. ${center.name} ${ctx.ymLong} 시민만족도 대외기관 조사결과를 아래와 같이 보고 드립니다.\n`;
+      body += `가. 조사기간 : ${v.surveyStart||'-'} ~ ${v.surveyEnd||'-'}\n`;
+      body += `나. 조사대상 : ${kind.targetDefault}\n`;
+      const total = Number(v.totalCount||0), complete = Number(v.completeCount||0);
+      const rate = total>0 ? ((complete/total)*100).toFixed(1) : '-';
+      body += `다. 조사건수 : ${v.totalCount||'-'}건 중 ${v.completeCount||'-'}명 완료(응답거부 ${total&&complete?total-complete:'-'}명, 응답율 ${rate}%)\n`;
+      body += `라. 조사방법 : 민원상담콜센터 자체 조사\n`;
+      body += `마. 조사결과 : ${v.result||'-'}\n`;
+      return body;
+    },
+    audit: (center, kind, ctx, v) => {
+      let body = `제 목 : ${center.name} 개인정보처리업무 수탁업체 교육 실시 및 실태점검 결과(${ctx.ymShort})\n\n`;
+      body += `2. ${center.name} ${ctx.ymLong} 개인정보처리업무 수탁업체 교육 실시 및 실태 점검 결과를 아래와 같이 보고 드립니다.\n`;
+      body += `가. 실태점검 결과 : ${v.result||'-'}\n`;
+      return body;
+    },
+    budget: (center, kind, ctx, v) => {
+      let body = `제 목 : ${center.name} ${ctx.ymShort} 사업비 지출 투명성 자료 제출\n\n`;
+      body += `2. ${center.name}의 ${ctx.ymLong} 사업비 지출 투명성 관련 인건비 지급 및 4대보험료 납부 내역 자료를 붙임과 같이 제출합니다.\n`;
+      body += `가. 주요내용 : ${kind.targetDefault}\n`;
+      body += `ㅇ 기간 : ${ctx.periodText}\n`;
+      body += `ㅇ 제출 내역 : ${kind.targetDefault}${v.note?`\n비고 : ${v.note}`:''}\n`;
+      return body;
+    },
   };
   async function renderCenterSimpleReport(center, fixedKindId){
     const container = $('center-sub-content');
     const cfg = center.simpleReportConfig || {kinds:[]};
     const kind0 = cfg.kinds.find(k=>k.id===fixedKindId);
     if(!kind0){ container.innerHTML = `<div class="rt-empty">등록된 보고서 종류를 찾을 수 없습니다.</div>`; return; }
-    const defaultYm = new Date().toISOString().slice(0,7);
-    if(!reportMonth || reportMonth.centerId!==center.id || reportMonth.kindId!==fixedKindId){ reportMonth = {centerId:center.id, ym:defaultYm, kindId:fixedKindId}; }
+    const periodType = kind0.periodType || 'month';
+    if(!reportMonth || reportMonth.centerId!==center.id || reportMonth.kindId!==fixedKindId){
+      reportMonth = {centerId:center.id, ym:defaultPeriodId(periodType), kindId:fixedKindId};
+    }
+
+    const periodInputHtml = periodType==='month'
+      ? `<input type="month" id="rp-period" value="${reportMonth.ym}" style="flex:1;">`
+      : `<input type="text" id="rp-period" value="${reportMonth.ym}" readonly style="flex:1;background:#F5F5F3;text-align:center;font-weight:700;">`;
 
     container.innerHTML = `
       <div class="rt-row">
-        <div class="rt-field" style="max-width:220px;"><label>기준월</label>
+        <div class="rt-field" style="max-width:240px;"><label>${periodType==='quarter'?'기준 분기':periodType==='half'?'기준 반기':periodType==='year'?'기준 연도':'기준월'}</label>
           <div style="display:flex;gap:4px;align-items:center;">
-            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-month-prev" style="padding:8px 10px;">◀</button>
-            <input type="month" id="rp-month" value="${reportMonth.ym}" style="flex:1;">
-            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-month-next" style="padding:8px 10px;">▶</button>
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-period-prev" style="padding:8px 10px;">◀</button>
+            ${periodInputHtml}
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-period-next" style="padding:8px 10px;">▶</button>
           </div>
         </div>
       </div>
-      <div class="rt-row" id="rp-fields-row"></div>
+      <div class="rt-hint">${periodLabel(periodType, reportMonth.ym)} — ${periodDateRangeText(periodType, reportMonth.ym)}</div>
+      <div class="rt-row" id="rp-fields-row" style="margin-top:10px;"></div>
       <div class="rt-section-title">복사용 미리보기</div>
       <div class="rt-copy-target" id="rp-preview" style="white-space:pre-wrap;font-size:12.8px;"></div>
       <div class="rt-actions">
         <button class="rt-btn rt-btn-primary" id="rp-save">저장</button>
         <button class="rt-btn rt-btn-ghost" id="rp-copy">문단 복사</button>
-        <button class="rt-btn rt-btn-danger" id="rp-delete" style="display:none;">이 달 기록 삭제</button>
+        <button class="rt-btn rt-btn-danger" id="rp-delete" style="display:none;">이 기록 삭제</button>
       </div>
     `;
 
@@ -1720,7 +1936,7 @@ ${fieldDesc}
       const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
       const existing = await storageGet(`report__${center.id}__${kind.id}__${reportMonth.ym}`);
       $('rp-fields-row').innerHTML = kind.fields.map(f=>`
-        <div class="rt-field" style="max-width:200px;"><label>${f.label}</label><input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="rp-f-${f.id}"></div>
+        <div class="rt-field" style="max-width:220px;"><label>${f.label}</label>${f.type==='textarea'?`<textarea class="rt-comment" id="rp-f-${f.id}" style="min-height:70px;"></textarea>`:`<input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="rp-f-${f.id}">`}</div>
       `).join('');
       kind.fields.forEach(f=>{
         const el = $('rp-f-'+f.id);
@@ -1733,41 +1949,199 @@ ${fieldDesc}
 
     function updatePreview(){
       const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
-      const [y,m] = reportMonth.ym.split('-');
-      const ctx = { ymLong:`${y}년 ${Number(m)}월`, ymShort:`${y}년${Number(m)}월`, periodText:`${y}년 ${Number(m)}월 1일 ~ ${y}년 ${Number(m)}월 ${lastDay(reportMonth.ym)}일` };
+      const pType = kind.periodType || 'month';
+      const id = reportMonth.ym;
+      let ctx;
+      if(pType==='month'){
+        const [y,m] = id.split('-');
+        ctx = { ymLong:`${y}년 ${Number(m)}월`, ymShort:`${y}년${Number(m)}월`, periodText:periodDateRangeText('month', id) };
+      }else{
+        ctx = { ymLong: periodLabel(pType,id), ymShort: periodLabel(pType,id).replace(' ',''), periodText: periodDateRangeText(pType, id) };
+      }
       const values = {};
       kind.fields.forEach(f=>{ values[f.id] = $('rp-f-'+f.id).value; });
       const builder = SIMPLE_REPORT_PARAGRAPH[kind.id];
       $('rp-preview').textContent = builder ? builder(center, kind, ctx, values) : JSON.stringify(values);
     }
 
-    function shiftMonth(ym, delta){
-      const [y,m] = ym.split('-').map(Number);
-      const d = new Date(y, m-1+delta, 1);
-      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    $('rp-period-prev').addEventListener('click', async ()=>{ reportMonth.ym = periodShift(periodType, reportMonth.ym, -1); await renderCenterSimpleReport(center, fixedKindId); });
+    $('rp-period-next').addEventListener('click', async ()=>{ reportMonth.ym = periodShift(periodType, reportMonth.ym, 1); await renderCenterSimpleReport(center, fixedKindId); });
+    if(periodType==='month'){
+      $('rp-period').addEventListener('change', async ()=>{ reportMonth.ym = $('rp-period').value; await renderFieldsAndLoad(); });
     }
-
-    $('rp-month').addEventListener('change', async ()=>{ reportMonth.ym = $('rp-month').value; await renderFieldsAndLoad(); });
-    $('rp-month-prev').addEventListener('click', async ()=>{ reportMonth.ym = shiftMonth(reportMonth.ym,-1); $('rp-month').value = reportMonth.ym; await renderFieldsAndLoad(); });
-    $('rp-month-next').addEventListener('click', async ()=>{ reportMonth.ym = shiftMonth(reportMonth.ym,1); $('rp-month').value = reportMonth.ym; await renderFieldsAndLoad(); });
     $('rp-copy').addEventListener('click', ()=>copyText($('rp-preview').textContent));
     $('rp-save').addEventListener('click', async ()=>{
       const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
       const rec = { savedAt: new Date().toISOString() };
       kind.fields.forEach(f=>{ rec[f.id] = $('rp-f-'+f.id).value; });
       await storageSet(`report__${center.id}__${kind.id}__${reportMonth.ym}`, rec);
-      toast(`${monthLabel(reportMonth.ym)} ${kind.label} 기록을 저장했습니다.`);
+      toast(`${periodLabel(periodType, reportMonth.ym)} ${kind.label} 기록을 저장했습니다.`);
       $('rp-delete').style.display = '';
     });
     $('rp-delete').addEventListener('click', async ()=>{
       const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
-      if(!confirm(`${monthLabel(reportMonth.ym)} ${kind.label} 기록을 삭제할까요?`)) return;
+      if(!confirm(`${periodLabel(periodType, reportMonth.ym)} ${kind.label} 기록을 삭제할까요?`)) return;
       await storageDelete(`report__${center.id}__${kind.id}__${reportMonth.ym}`);
       toast('삭제했습니다.');
       $('rp-delete').style.display = 'none';
     });
 
     await renderFieldsAndLoad();
+  }
+
+  // ---------- 이벤트 로그 탭 (채용공고/채용알림처럼 주기 없이 건별로 계속 추가되는 문서) ----------
+  const EVENT_LOG_PARAGRAPH = {
+    'hire-request': (center, kind, v) => {
+      let body = `제 목 : ${center.name} 상담사 채용 공고 협조 요청\n\n`;
+      body += `2. ${center.name} 상담사 채용 공고 협조 관련 사항을 아래와 같이 전달드리며, 업무에 최선을 다하겠습니다.\n`;
+      body += `가. 자격요건\n${v.qualification||'-'}\n`;
+      body += `나. 모집기간 : ${v.startDate||'-'} ~ ${v.period||'채용시까지'}\n`;
+      return body;
+    },
+    'hire-notice': (center, kind, v) => {
+      let body = `제 목 : ${center.name} 상담인력 채용 알림\n\n`;
+      body += `2. ${center.name} 상담인력 채용 관련하여 아래와 같이 보고드리며 업무에 최선을 다하겠습니다.\n`;
+      body += `가. 채용인원 : ${v.headcount||'-'}명\n`;
+      (v.rows||[]).forEach((r,i)=>{ body += `  ${i+1}. ${r.name||'-'} — ${r.career||'-'}\n`; });
+      body += `나. 채용 기준 : ${v.criteria||'-'}\n`;
+      body += `다. 채용 일자 : ${v.hireDate||'-'}\n`;
+      return body;
+    },
+  };
+  let eventLogState = null; // {centerId, kindId, entryId}
+  async function renderCenterEventLog(center, fixedKindId){
+    const container = $('center-sub-content');
+    const cfg = center.eventLogConfig || {kinds:[]};
+    const kind = cfg.kinds.find(k=>k.id===fixedKindId);
+    if(!kind){ container.innerHTML = `<div class="rt-empty">등록된 로그 종류를 찾을 수 없습니다.</div>`; return; }
+    if(!eventLogState || eventLogState.centerId!==center.id || eventLogState.kindId!==fixedKindId){
+      eventLogState = { centerId:center.id, kindId:fixedKindId, entryId:null };
+    }
+
+    container.innerHTML = `
+      <div class="rt-status" id="el-mode-status">새 항목을 작성 중입니다.</div>
+      <div class="rt-row" style="margin-top:10px;">
+        <div class="rt-field" style="max-width:200px;"><label>작성(발생)일자</label><input type="date" id="el-entrydate"></div>
+      </div>
+      <div class="rt-row" id="el-fields-row"></div>
+      <div id="el-rows-wrap" style="display:${kind.hasRows?'':'none'};">
+        <div class="rt-section-title">${kind.rowsTitle||'세부 목록'}</div>
+        <table class="rt-table" id="el-rows-table">
+          <thead><tr>${(kind.rowFields||[]).map(f=>`<th>${f.label}</th>`).join('')}<th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="el-row-add" style="margin-top:6px;">+ 행 추가</button>
+      </div>
+      <div class="rt-section-title">복사용 미리보기</div>
+      <div class="rt-copy-target" id="el-preview" style="white-space:pre-wrap;font-size:12.8px;"></div>
+      <div class="rt-actions">
+        <button class="rt-btn rt-btn-primary" id="el-save">저장</button>
+        <button class="rt-btn rt-btn-ghost" id="el-new">새 항목 작성</button>
+        <button class="rt-btn rt-btn-ghost" id="el-copy">문단 복사</button>
+        <button class="rt-btn rt-btn-danger" id="el-delete" style="display:none;">이 항목 삭제</button>
+      </div>
+      <div class="rt-section-title">지난 기록</div>
+      <div id="el-list"></div>
+    `;
+
+    function renderRowsTable(rowsData){
+      document.querySelector('#el-rows-table tbody').innerHTML = (rowsData||[]).map((r,i)=>`
+        <tr data-i="${i}">${(kind.rowFields||[]).map(f=>`<td class="rt-num-input"><input type="text" class="el-row-f" data-field="${f.id}" data-i="${i}" value="${(r[f.id]||'').toString().replace(/"/g,'&quot;')}"></td>`).join('')}<td><button class="rt-btn rt-btn-danger rt-btn-sm el-row-del">삭제</button></td></tr>
+      `).join('');
+      document.querySelectorAll('.el-row-f').forEach(inp=>inp.addEventListener('input', updatePreview));
+      document.querySelectorAll('.el-row-del').forEach(b=>b.addEventListener('click', ()=>{ b.closest('tr').remove(); updatePreview(); }));
+    }
+    function readRowsTable(){
+      return [...document.querySelectorAll('#el-rows-table tbody tr')].map(tr=>{
+        const obj = {};
+        (kind.rowFields||[]).forEach(f=>{ obj[f.id] = tr.querySelector(`.el-row-f[data-field="${f.id}"]`).value; });
+        return obj;
+      });
+    }
+
+    async function loadEntry(){
+      let existing = null;
+      if(eventLogState.entryId){
+        existing = await storageGet(`eventlog__${center.id}__${kind.id}__${eventLogState.entryId}`);
+      }
+      $('el-mode-status').textContent = eventLogState.entryId ? '기존 항목을 수정하고 있습니다.' : '새 항목을 작성 중입니다.';
+      $('el-entrydate').value = existing && existing.entryDate ? existing.entryDate : new Date().toISOString().slice(0,10);
+      $('el-fields-row').innerHTML = kind.fields.map(f=>`
+        <div class="rt-field" style="max-width:240px;"><label>${f.label}</label>${f.type==='textarea'?`<textarea class="rt-comment" id="el-f-${f.id}" style="min-height:70px;"></textarea>`:`<input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="el-f-${f.id}">`}</div>
+      `).join('');
+      kind.fields.forEach(f=>{
+        const el = $('el-f-'+f.id);
+        el.value = existing && existing[f.id]!==undefined && existing[f.id]!==null ? existing[f.id] : (f.default!==undefined?f.default:'');
+        el.addEventListener('input', updatePreview);
+      });
+      $('el-entrydate').addEventListener('input', updatePreview);
+      if(kind.hasRows) renderRowsTable(existing ? existing.rows : []);
+      $('el-delete').style.display = eventLogState.entryId ? '' : 'none';
+      updatePreview();
+      await renderList();
+    }
+
+    function updatePreview(){
+      const values = {};
+      kind.fields.forEach(f=>{ values[f.id] = $('el-f-'+f.id).value; });
+      if(kind.hasRows) values.rows = readRowsTable();
+      const builder = EVENT_LOG_PARAGRAPH[kind.id];
+      $('el-preview').textContent = builder ? builder(center, kind, values) : JSON.stringify(values);
+    }
+
+    async function renderList(){
+      const hist = await storageList(`eventlog__${center.id}__${kind.id}__`);
+      $('el-list').innerHTML = hist.length ? hist.map(item=>{
+        const entryId = item.key.split('__').pop();
+        const d = item.value.entryDate || (item.value.savedAt||'').slice(0,10);
+        let summary = kind.hasRows ? `${(item.value.rows||[]).length}명` : (item.value[kind.fields[0].id]||'-');
+        return `<div class="rt-history-row"><div class="info"><b>${d}</b> · ${summary}</div>
+          <div class="ops"><button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit="${entryId}">수정</button><button class="rt-btn rt-btn-danger rt-btn-sm" data-del="${entryId}">삭제</button></div></div>`;
+      }).join('') : `<div class="rt-empty">저장된 기록이 없습니다.</div>`;
+      $('el-list').querySelectorAll('[data-edit]').forEach(b=>{
+        b.addEventListener('click', async ()=>{ eventLogState.entryId = b.dataset.edit; await loadEntry(); });
+      });
+      $('el-list').querySelectorAll('[data-del]').forEach(b=>{
+        b.addEventListener('click', async ()=>{
+          if(!confirm('이 기록을 삭제할까요?')) return;
+          await storageDelete(`eventlog__${center.id}__${kind.id}__${b.dataset.del}`);
+          if(eventLogState.entryId===b.dataset.del) eventLogState.entryId = null;
+          toast('삭제했습니다.');
+          await loadEntry();
+        });
+      });
+    }
+
+    $('el-new').addEventListener('click', async ()=>{ eventLogState.entryId = null; await loadEntry(); });
+    $('el-copy').addEventListener('click', ()=>copyText($('el-preview').textContent));
+    $('el-save').addEventListener('click', async ()=>{
+      const entryId = eventLogState.entryId || ('e'+Date.now());
+      const rec = { entryDate: $('el-entrydate').value, savedAt: new Date().toISOString() };
+      kind.fields.forEach(f=>{ rec[f.id] = $('el-f-'+f.id).value; });
+      if(kind.hasRows) rec.rows = readRowsTable();
+      await storageSet(`eventlog__${center.id}__${kind.id}__${entryId}`, rec);
+      eventLogState.entryId = entryId;
+      toast('저장했습니다.');
+      await loadEntry();
+    });
+    $('el-delete').addEventListener('click', async ()=>{
+      if(!eventLogState.entryId) return;
+      if(!confirm('이 항목을 삭제할까요?')) return;
+      await storageDelete(`eventlog__${center.id}__${kind.id}__${eventLogState.entryId}`);
+      eventLogState.entryId = null;
+      toast('삭제했습니다.');
+      await loadEntry();
+    });
+    if(kind.hasRows){
+      $('el-row-add').addEventListener('click', ()=>{
+        const rowsData = readRowsTable();
+        rowsData.push({});
+        renderRowsTable(rowsData);
+        updatePreview();
+      });
+    }
+
+    await loadEntry();
   }
 
   // ============================================================
