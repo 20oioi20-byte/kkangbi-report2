@@ -175,6 +175,39 @@
   function monthLabel(ym){ const [y,m]=ym.split('-'); return `${y}년 ${Number(m)}월`; }
   function lastDay(ym){ const [y,m]=ym.split('-').map(Number); return new Date(y,m,0).getDate(); }
   function round10(supply){ return Math.round((supply||0) * 0.1); }
+
+  // ---------- 공휴일 / 지급일 자동계산 ----------
+  const KR_HOLIDAYS_2026 = [
+    '2026-01-01', // 신정
+    '2026-02-16','2026-02-17','2026-02-18', // 설날 연휴
+    '2026-03-01','2026-03-02', // 삼일절 + 대체공휴일
+    '2026-05-01', // 노동절
+    '2026-05-05', // 어린이날
+    '2026-05-24','2026-05-25', // 부처님오신날 + 대체공휴일
+    '2026-06-03', // 지방선거(임시공휴일)
+    '2026-06-06', // 현충일
+    '2026-07-17', // 제헌절
+    '2026-08-15','2026-08-17', // 광복절 + 대체공휴일
+    '2026-09-24','2026-09-25','2026-09-26', // 추석 연휴
+    '2026-10-03','2026-10-05', // 개천절 + 대체공휴일
+    '2026-10-09', // 한글날
+    '2026-12-25', // 성탄절
+  ];
+  function isHoliday(dateObj){
+    const dow = dateObj.getDay(); // 0=일,6=토
+    if(dow===0 || dow===6) return true;
+    const ds = `${dateObj.getFullYear()}-${String(dateObj.getMonth()+1).padStart(2,'0')}-${String(dateObj.getDate()).padStart(2,'0')}`;
+    return KR_HOLIDAYS_2026.includes(ds);
+  }
+  // 매월 지정일(기본 10일)이 공휴일/주말이면 하루씩 앞으로 당겨 영업일을 반환
+  function computePayDate(ym, targetDay){
+    const [y,m] = ym.split('-').map(Number);
+    let d = new Date(y, m-1, targetDay||10);
+    while(isHoliday(d)){
+      d.setDate(d.getDate()-1);
+    }
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
   function lgPeriodText(ym){
     const [y,m] = ym.split('-').map(Number);
     const pd = new Date(y, m-2, 20);
@@ -360,30 +393,83 @@ ${fieldDesc}
 
   async function loadCenters(){
     const saved = await storageGet('centers');
-    if(saved && saved.length){ centers = saved; return; }
+    if(saved && saved.length){ centers = saved.map(migrateCenter); return; }
     centers = defaultCenters();
     await storageSet('centers', centers);
   }
   function defaultCenters(){
     return [
       { id: uid(), name:'평택시 민원콜센터', type:'perf', config:{}, bonusEnabled:true,
-        bonusConfig:{ headcountEnabled:true, targetText:'평택시 민원콜센터 상담인력', fundText:'{ymLong} 업무 성과 목표 달성', budgetLine:"급여항목의 '성과급_변동'" } },
+        payoutTypes:[
+          { id:'bonus', label:'성과급', headcountEnabled:true, targetText:'평택시 민원콜센터 상담인력', fundText:'{ymLong} 업무 성과 목표 달성', budgetLine:"급여항목의 '성과급_변동'", payDay:10 },
+        ] },
       { id: uid(), name:'KB손해보험 제휴CS사업(부천센터)', type:'billing',
         config:{ rowLabels:['KB손해보험 제휴CS사업','ASP_KB손해보험 제휴CS사업'], periodRule:'calendar', headcountEnabled:true, hasAuto:true, autoLabel:'자동이체 전환 도급비', unitPriceDefault:15800, hasContract:false, contractAmount:null },
-        bonusEnabled:true, bonusConfig:{ headcountEnabled:false, targetText:'KB손해보험 제휴CS사업(부천센터) 소속직원', fundText:'{ymLong} 도급비 청구 금액 내 지급', budgetLine:'성과급_변동' } },
+        bonusEnabled:true,
+        payoutTypes:[
+          { id:'bonus', label:'성과급', headcountEnabled:false, targetText:'KB손해보험 제휴CS사업(부천센터) 소속직원', fundText:'{ymLong} 도급비 청구 금액 내 지급', budgetLine:'성과급_변동', payDay:10 },
+          { id:'reward', label:'포상금(정착지원)', headcountEnabled:true, targetText:'KB손해보험 제휴CS(부천센터) 소속직원', fundText:'신규 입사자 정착지원금 및 지인추천 포상', budgetLine:'기타포상비', payDay:10 },
+        ],
+        weeklyCheckEnabled:true,
+        weeklyCheckConfig:{
+          title:'개인정보가 포함된 이미지 파일 모니터링 점검',
+          desc:'PC 바탕화면에 이미지 저장 권한 부여된 제지급 업무 직원',
+          weekday:3, // 0=일 ... 3=수
+          team:'제휴지원팀',
+          defaultTarget:3, defaultChecked:3, defaultVuln:0, defaultNote:'특이사항 없음',
+        },
+        simpleReportEnabled:true,
+        simpleReportConfig:{
+          kinds:[
+            { id:'selfcheck', label:'개인정보처리 수탁자 자체점검', targetLabel:'점검 대상', targetDefault:'KB손해보험 고객센터',
+              fields:[
+                {id:'checkDate', label:'점검 일시', type:'date'},
+                {id:'headcount', label:'보안점검 총 인원 (명)', type:'number'},
+                {id:'result', label:'점검 결과', type:'text', default:'특이사항 없음'},
+                {id:'offCount', label:'점검 당일 휴무자 (명)', type:'number'},
+                {id:'extraCheckDate', label:'추가 점검일', type:'date'},
+              ] },
+            { id:'loaneval', label:'대출상담사 업무수행 평가', targetLabel:'평가자', targetDefault:'주식회사 케이티아이에스',
+              fields:[
+                {id:'headcount', label:'평가 대상 대출상담사 인원 (명)', type:'number'},
+                {id:'result', label:'평가 결과', type:'text', default:'위반 사항이나 특이사항 없음'},
+              ] },
+          ]
+        } },
       { id: uid(), name:'KB손해보험 장기계약정비센터', type:'billing',
         config:{ rowLabels:['도급 수수료'], periodRule:'calendar', headcountEnabled:false, hasAuto:false, hasContract:true, contractAmount:61810000 },
-        bonusEnabled:true, bonusConfig:{ headcountEnabled:false, targetText:'KB손해보험 장기계약정비센터 소속직원', fundText:'{ymLong} 도급비 청구 금액 내 지급', budgetLine:'성과급_변동' } },
+        bonusEnabled:true,
+        payoutTypes:[
+          { id:'bonus', label:'성과급', headcountEnabled:false, targetText:'KB손해보험 장기계약정비센터 소속직원', fundText:'{ymLong} 도급비 청구 금액 내 지급', budgetLine:'성과급_변동', payDay:10 },
+        ] },
       { id: uid(), name:'LG전자 AS센터', type:'billing',
         config:{ rowLabels:['LG전자 AS센터','ASP_LG전자 AS센터'], periodRule:'prev20cur19', headcountEnabled:true, hasAuto:false, hasContract:false },
-        bonusEnabled:true, bonusConfig:{ headcountEnabled:false, targetText:'LG전자 AS센터 소속직원', fundText:'{ymLong} 위탁수수료 청구 금액 내 지급', budgetLine:'성과급_변동' } },
+        bonusEnabled:true,
+        payoutTypes:[
+          { id:'bonus', label:'성과급', headcountEnabled:false, targetText:'LG전자 AS센터 소속직원', fundText:'{ymLong} 위탁수수료 청구 금액 내 지급', budgetLine:'성과급_변동', payDay:10 },
+        ] },
       { id: uid(), name:'이니텍 고객센터', type:'billing',
         config:{ rowLabels:['도급수수료'], periodRule:'calendar', headcountEnabled:true, hasAuto:false, hasContract:false },
-        bonusEnabled:false, bonusConfig:{} },
+        bonusEnabled:false, payoutTypes:[] },
     ];
+  }
+
+  // 구버전(bonusConfig 단일) 데이터를 payoutTypes 배열로 자동 이관
+  function migrateCenter(c){
+    if(!c.payoutTypes){
+      if(c.bonusConfig && Object.keys(c.bonusConfig).length){
+        c.payoutTypes = [ Object.assign({id:'bonus', label:'성과급', payDay:10}, c.bonusConfig) ];
+      }else{
+        c.payoutTypes = [];
+      }
+    }
+    if(c.weeklyCheckEnabled===undefined) c.weeklyCheckEnabled = false;
+    if(c.simpleReportEnabled===undefined) c.simpleReportEnabled = false;
+    return c;
   }
   async function saveCenters(){ await storageSet('centers', centers); }
   function getCenter(id){ return centers.find(c=>c.id===id); }
+
 
   // ============================================================
   // 사이드바 렌더
@@ -433,17 +519,17 @@ ${fieldDesc}
     }
     tbody.innerHTML = rows || `<tr><td colspan="4" style="text-align:center;color:var(--sub);">등록된 센터가 없습니다.</td></tr>`;
     tbody.querySelectorAll('tr[data-id]').forEach(tr=>{
-      tr.addEventListener('click', ()=>{ currentView = {type:'center', id:tr.dataset.id, sub:'history'}; renderAll(); });
+      tr.addEventListener('click', ()=>{ currentView = {type:'center', id:tr.dataset.id, sub:'allhistory'}; renderAll(); });
     });
 
     const q = searchQuery.trim().toLowerCase();
-    const filteredRecent = recentAll.filter(r=> !q || r.center.name.toLowerCase().includes(q) || r.ym.includes(q));
+    const filteredRecent = recentAll.filter(r=> !q || r.center.name.toLowerCase().includes(q) || r.ym.includes(q) || JSON.stringify(r.value||{}).toLowerCase().includes(q));
     $('all-recent').innerHTML = filteredRecent.length ? filteredRecent.map(r=>`
       <div class="rt-history-row"><div class="info"><b>${r.center.name}</b> · ${monthLabel(r.ym)}</div>
       <div class="ops"><button class="rt-btn rt-btn-ghost rt-btn-sm" data-goto="${r.center.id}">열기</button></div></div>`).join('')
       : `<div class="rt-empty">저장된 내역이 없습니다.</div>`;
     $('all-recent').querySelectorAll('[data-goto]').forEach(b=>{
-      b.addEventListener('click', ()=>{ currentView = {type:'center', id:b.dataset.goto, sub:'history'}; renderAll(); });
+      b.addEventListener('click', ()=>{ currentView = {type:'center', id:b.dataset.goto, sub:'allhistory'}; renderAll(); });
     });
   }
 
@@ -547,12 +633,18 @@ ${fieldDesc}
   // ============================================================
   // 센터 상세 뷰
   // ============================================================
+  function inputTabLabel(center){
+    return center.type==='billing' ? '수수료청구' : '입력';
+  }
+
   async function renderCenterView(){
     const center = getCenter(currentView.id);
     if(!center){ currentView = {type:'all'}; return renderAll(); }
     const main = $('rt-main');
-    const subtabs = [['input','입력'],['history','이력']];
+    const subtabs = [['allhistory','전체이력'], ['input', inputTabLabel(center)]];
     if(center.bonusEnabled) subtabs.push(['bonus','성과급']);
+    if(center.weeklyCheckEnabled) subtabs.push(['weekly', (center.weeklyCheckConfig&&center.weeklyCheckConfig.shortLabel)||'점검입력']);
+    if(center.simpleReportEnabled) subtabs.push(['simplereport','보고입력']);
     main.innerHTML = `
       <div class="rt-main-header">
         <div><h2>${center.name}</h2><div class="desc">${TYPE_LABEL[center.type]}${center.type==='billing'?' · '+center.config.rowLabels.join(' / '):''}</div></div>
@@ -576,9 +668,102 @@ ${fieldDesc}
       renderAll();
     });
 
-    if(currentView.sub==='input') await renderCenterInput(center);
-    else if(currentView.sub==='history') await renderCenterHistory(center);
+    if(currentView.sub==='allhistory') await renderCenterAllHistory(center);
+    else if(currentView.sub==='input') await renderCenterInput(center);
     else if(currentView.sub==='bonus') await renderCenterBonus(center);
+    else if(currentView.sub==='weekly') await renderCenterWeeklyCheck(center);
+    else if(currentView.sub==='simplereport') await renderCenterSimpleReport(center);
+  }
+
+  // ---------- 전체이력 탭 (모든 모듈 통합, 10개씩 페이지네이션) ----------
+  let allHistoryPage = 0;
+  async function renderCenterAllHistory(center){
+    const container = $('center-sub-content');
+    container.innerHTML = `<div id="allhist-list"></div><div class="rt-actions" id="allhist-pager" style="justify-content:center;"></div>`;
+
+    const recHist = await storageList(`rec__${center.id}__`);
+    const bonusHist = center.bonusEnabled ? await storageList(`bonus__${center.id}__`) : [];
+    const weeklyHist = center.weeklyCheckEnabled ? await storageList(`weekly__${center.id}__`) : [];
+    const reportHist = center.simpleReportEnabled ? await storageList(`report__${center.id}__`) : [];
+
+    let rows = [];
+    recHist.forEach(item=>{
+      const ym = item.key.split('__').pop();
+      let summary = center.type==='perf'
+        ? `인입 ${fmt(item.value.inbound)}건 · 응대율 ${fmt1(item.value.rate)}%`
+        : `공급가액 합계 ${fmt((item.value.supplies||[]).reduce((a,b)=>a+(b||0),0))}원`;
+      rows.push({ module:inputTabLabel(center), sub:'input', ym, summary, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    bonusHist.forEach(item=>{
+      const parts = item.key.split('__'); const ym = parts.pop(); const typeId = parts.pop();
+      const pt = (center.payoutTypes||[]).find(p=>p.id===typeId);
+      rows.push({ module: pt?pt.label:'성과급', sub:'bonus', ym, summary:`${fmt(item.value.amount)}원 · 지급일 ${item.value.paydate||'-'}`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value, payoutTypeId:typeId });
+    });
+    weeklyHist.forEach(item=>{
+      const ym = item.key.split('__').pop();
+      const rowsData = item.value.rows||[];
+      rows.push({ module:'점검입력', sub:'weekly', ym, summary:`점검 ${rowsData.length}회 · 취약인원 합계 ${rowsData.reduce((a,r)=>a+(Number(r.vuln)||0),0)}명`, updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value });
+    });
+    reportHist.forEach(item=>{
+      const parts = item.key.split('__'); const ym = parts.pop(); const kindId = parts.pop();
+      const kind = (center.simpleReportConfig&&center.simpleReportConfig.kinds||[]).find(k=>k.id===kindId);
+      rows.push({ module: kind?kind.label:'보고', sub:'simplereport', ym, summary:(item.value.result||'-'), updatedAt:item.value.savedAt||item.updated_at||ym, raw:item.value, kindId });
+    });
+
+    const q = searchQuery.trim().toLowerCase();
+    if(q){
+      rows = rows.filter(r=> JSON.stringify(r.raw).toLowerCase().includes(q) || r.ym.includes(q) || r.module.toLowerCase().includes(q) || monthLabel(r.ym).toLowerCase().includes(q));
+    }
+    rows.sort((a,b)=> (a.updatedAt < b.updatedAt ? 1 : -1));
+
+    const pageSize = 10;
+    const totalPages = Math.max(1, Math.ceil(rows.length/pageSize));
+    if(allHistoryPage >= totalPages) allHistoryPage = totalPages-1;
+    if(allHistoryPage < 0) allHistoryPage = 0;
+    const pageRows = rows.slice(allHistoryPage*pageSize, allHistoryPage*pageSize+pageSize);
+
+    $('allhist-list').innerHTML = pageRows.length ? pageRows.map(r=>`
+      <div class="rt-history-row">
+        <div class="info"><b>${monthLabel(r.ym)}</b> · <span style="color:var(--navy-light);font-weight:700;">${r.module}</span> · ${r.summary}</div>
+        <div class="ops">
+          <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit-sub="${r.sub}" data-edit-ym="${r.ym}" data-edit-type="${r.payoutTypeId||r.kindId||''}">수정</button>
+          <button class="rt-btn rt-btn-danger rt-btn-sm" data-del-sub="${r.sub}" data-del-ym="${r.ym}" data-del-type="${r.payoutTypeId||r.kindId||''}">삭제</button>
+        </div>
+      </div>`).join('') : `<div class="rt-empty">${q?'검색 결과가 없습니다.':'저장된 기록이 없습니다.'}</div>`;
+
+    $('allhist-pager').innerHTML = totalPages>1 ? `
+      <button class="rt-btn rt-btn-ghost rt-btn-sm" id="allhist-prev" ${allHistoryPage===0?'disabled':''}>◀ 이전</button>
+      <span style="font-size:12px;color:var(--sub);align-self:center;">${allHistoryPage+1} / ${totalPages} 페이지 (총 ${rows.length}건)</span>
+      <button class="rt-btn rt-btn-ghost rt-btn-sm" id="allhist-next" ${allHistoryPage>=totalPages-1?'disabled':''}>다음 ▶</button>
+    ` : (rows.length ? `<span style="font-size:12px;color:var(--sub);">총 ${rows.length}건</span>` : '');
+
+    const prevBtn = $('allhist-prev'), nextBtn = $('allhist-next');
+    if(prevBtn) prevBtn.addEventListener('click', ()=>{ allHistoryPage--; renderCenterAllHistory(center); });
+    if(nextBtn) nextBtn.addEventListener('click', ()=>{ allHistoryPage++; renderCenterAllHistory(center); });
+
+    container.querySelectorAll('[data-edit-sub]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const sub = b.dataset.editSub, ym = b.dataset.editYm, typeId = b.dataset.editType;
+        if(sub==='input'){ inputMonth = {centerId:center.id, ym}; }
+        else if(sub==='bonus'){ bonusMonth = {centerId:center.id, ym, payoutTypeId:typeId}; }
+        else if(sub==='weekly'){ weeklyMonth = {centerId:center.id, ym}; }
+        else if(sub==='simplereport'){ reportMonth = {centerId:center.id, ym, kindId:typeId}; }
+        currentView.sub = sub;
+        renderAll();
+      });
+    });
+    container.querySelectorAll('[data-del-sub]').forEach(b=>{
+      b.addEventListener('click', async ()=>{
+        const sub = b.dataset.delSub, ym = b.dataset.delYm, typeId = b.dataset.delType;
+        if(!confirm(`${monthLabel(ym)} 기록을 삭제할까요?`)) return;
+        if(sub==='input') await storageDelete(`rec__${center.id}__${ym}`);
+        else if(sub==='bonus') await storageDelete(`bonus__${center.id}__${typeId}__${ym}`);
+        else if(sub==='weekly') await storageDelete(`weekly__${center.id}__${ym}`);
+        else if(sub==='simplereport') await storageDelete(`report__${center.id}__${typeId}__${ym}`);
+        toast('삭제했습니다.');
+        renderCenterAllHistory(center);
+      });
+    });
   }
 
   // ---------- 입력 탭 ----------
@@ -1093,110 +1278,361 @@ ${fieldDesc}
     if(center.type==='perf') renderPerfForm(center); else renderBillingForm(center);
   }
 
-  // ---------- 이력 탭 ----------
-  async function renderCenterHistory(center){
-    const container = $('center-sub-content');
-    container.innerHTML = `<div id="hist-list"></div>`;
-    const hist = await storageList(`rec__${center.id}__`);
-    const q = searchQuery.trim().toLowerCase();
-    const filtered = hist.filter(h=> !q || h.key.includes(q) || monthLabel(h.key.split('__').pop()).toLowerCase().includes(q));
-    $('hist-list').innerHTML = filtered.length ? filtered.map(h=>{
-      const ym = h.key.split('__').pop();
-      let summary;
-      if(center.type==='perf') summary = `인입 ${fmt(h.value.inbound)}건 · 응대율 ${fmt1(h.value.rate)}%`;
-      else{
-        const s = (h.value.supplies||[]).reduce((a,b)=>a+(b||0),0);
-        summary = `공급가액 합계 ${fmt(s)}원`;
-      }
-      return `<div class="rt-history-row">
-        <div class="info"><b>${monthLabel(ym)}</b> · ${summary}</div>
-        <div class="ops">
-          <button class="rt-btn rt-btn-ghost rt-btn-sm" data-edit="${ym}">수정</button>
-          <button class="rt-btn rt-btn-danger rt-btn-sm" data-del="${ym}">삭제</button>
-        </div></div>`;
-    }).join('') : `<div class="rt-empty">저장된 기록이 없습니다.</div>`;
-    $('hist-list').querySelectorAll('[data-edit]').forEach(b=>{
-      b.addEventListener('click', ()=>{ inputMonth = {centerId:center.id, ym:b.dataset.edit}; currentView.sub='input'; renderAll(); });
-    });
-    $('hist-list').querySelectorAll('[data-del]').forEach(b=>{
-      b.addEventListener('click', async ()=>{
-        if(!confirm(`${monthLabel(b.dataset.del)} 기록을 삭제할까요?`)) return;
-        await storageDelete(`rec__${center.id}__${b.dataset.del}`);
-        toast('삭제했습니다.');
-        renderCenterHistory(center);
-      });
-    });
-  }
-
   // ---------- 성과급 탭 ----------
+  let bonusMonth = null; // {centerId, ym, payoutTypeId}
   async function renderCenterBonus(center){
     const container = $('center-sub-content');
-    const ym = new Date().toISOString().slice(0,7);
+    const types = center.payoutTypes || [];
+    if(!types.length){
+      container.innerHTML = `<div class="rt-empty">등록된 지급유형이 없습니다. "센터 설정"에서 지급유형을 추가해주세요.</div>`;
+      return;
+    }
+    const defaultYm = new Date().toISOString().slice(0,7);
+    if(!bonusMonth || bonusMonth.centerId!==center.id){ bonusMonth = {centerId:center.id, ym:defaultYm, payoutTypeId:types[0].id}; }
+    if(!types.find(t=>t.id===bonusMonth.payoutTypeId)) bonusMonth.payoutTypeId = types[0].id;
+
     container.innerHTML = `
       <div class="rt-row">
-        <div class="rt-field" style="max-width:160px;"><label>기준월</label><input type="month" id="bn-month" value="${ym}"></div>
-        ${center.bonusConfig.headcountEnabled?'<div class="rt-field" style="max-width:140px;"><label>지급인원 (명)</label><input type="number" id="bn-headcount"></div>':''}
-        <div class="rt-field" style="max-width:180px;"><label>지급금액 (원)</label><input type="number" id="bn-amount"></div>
-        <div class="rt-field" style="max-width:180px;"><label>지급일자</label><input type="date" id="bn-paydate" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div class="rt-field" style="max-width:220px;"><label>지급유형</label>
+          <select id="bn-type">${types.map(t=>`<option value="${t.id}" ${t.id===bonusMonth.payoutTypeId?'selected':''}>${t.label}</option>`).join('')}</select>
+        </div>
+        <div class="rt-field" style="max-width:220px;"><label>기준월</label>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="bn-month-prev" style="padding:8px 10px;">◀</button>
+            <input type="month" id="bn-month" value="${bonusMonth.ym}" style="flex:1;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="bn-month-next" style="padding:8px 10px;">▶</button>
+          </div>
+        </div>
       </div>
+      <div class="rt-row" id="bn-fields-row"></div>
       <div class="rt-section-title">복사용 미리보기</div>
       <div class="rt-copy-target" id="bn-preview" style="white-space:pre-wrap;font-size:12.8px;"></div>
       <div class="rt-actions">
         <button class="rt-btn rt-btn-primary" id="bn-save">저장</button>
         <button class="rt-btn rt-btn-ghost" id="bn-copy">문단 복사</button>
+        <button class="rt-btn rt-btn-danger" id="bn-delete" style="display:none;">이 달 기록 삭제</button>
       </div>
-      <div class="rt-section-title">성과급 지급 이력</div>
-      <div id="bn-hist"></div>
     `;
-    function update(){
-      const ymv = $('bn-month').value;
+
+    async function renderFieldsAndLoad(){
+      const pt = types.find(t=>t.id===bonusMonth.payoutTypeId);
+      const autoPayDate = computePayDate(bonusMonth.ym, pt.payDay||10);
+      const existing = await storageGet(`bonus__${center.id}__${pt.id}__${bonusMonth.ym}`);
+      $('bn-fields-row').innerHTML = `
+        ${pt.headcountEnabled?'<div class="rt-field" style="max-width:140px;"><label>지급인원 (명)</label><input type="number" id="bn-headcount"></div>':''}
+        <div class="rt-field" style="max-width:180px;"><label>지급금액 (원)</label><input type="number" id="bn-amount"></div>
+        <div class="rt-field" style="max-width:200px;"><label>지급일자 (자동계산, 수정 가능)</label><input type="date" id="bn-paydate"></div>
+      `;
+      if(pt.headcountEnabled) $('bn-headcount').value = existing && existing.headcount!==undefined && existing.headcount!==null ? existing.headcount : '';
+      $('bn-amount').value = existing && existing.amount!==undefined && existing.amount!==null ? existing.amount : '';
+      $('bn-paydate').value = existing && existing.paydate ? existing.paydate : autoPayDate;
+      $('bn-delete').style.display = existing ? '' : 'none';
+
+      if(pt.headcountEnabled) $('bn-headcount').addEventListener('input', updatePreview);
+      $('bn-amount').addEventListener('input', updatePreview);
+      $('bn-paydate').addEventListener('input', updatePreview);
+      updatePreview();
+    }
+
+    function updatePreview(){
+      const pt = types.find(t=>t.id===bonusMonth.payoutTypeId);
+      const ymv = bonusMonth.ym;
       const [y,m] = ymv.split('-');
       const ctx = { ymLong:`${y}년 ${Number(m)}월`, ymShort:`${y.slice(2)}년${Number(m)}월`, ymDot:`${y}.${Number(m)}` };
-      const bc = center.bonusConfig;
-      const target = (bc.targetText||'').replace('{name}', center.name);
-      const fund = (bc.fundText||'').replace('{ymLong}', ctx.ymLong);
+      const target = (pt.targetText||'').replace('{name}', center.name);
+      const fund = (pt.fundText||'').replace('{ymLong}', ctx.ymLong);
       const amount = $('bn-amount').value ? fmt(Number($('bn-amount').value)) : '-';
       const paydate = $('bn-paydate').value ? $('bn-paydate').value.replace(/-/g,'. ')+'.' : '-';
-      const hc = bc.headcountEnabled ? ($('bn-headcount').value||'-') : null;
-      let body = `제 목 : ${center.name} 성과급 지급(${ctx.ymDot}월)\n\n`;
-      body += `1. 위 관련 ${center.name}의 ${ctx.ymLong} 업무 성과에 따른 성과급을 아래와 같이 지급하오니 업무에 참조하여 주시기 바랍니다.\n`;
+      const hc = pt.headcountEnabled ? ($('bn-headcount').value||'-') : null;
+      let body = `제 목 : ${center.name} ${pt.label} 지급(${ctx.ymDot}월)\n\n`;
+      body += `1. 위 관련 ${center.name}의 ${ctx.ymLong} 관련 ${pt.label}을(를) 아래와 같이 지급하오니 업무에 참조하여 주시기 바랍니다.\n`;
       body += `가. 지급대상 : ${target}\n나. 지급재원 : ${fund}\n다. 지급금액 : ${amount}원\n`;
       if(hc!==null) body += `  ㅇ 지급인원 : ${hc}명\n`;
-      body += `  ㅇ 지급일자 : ${paydate}\n  ㅇ 예산과목 : ${bc.budgetLine||'성과급_변동'}\n`;
-      body += `붙임 : ${center.name} 성과급 지급내역(${ctx.ymShort}) 1부.  끝.`;
+      body += `  ㅇ 지급일자 : ${paydate}\n  ㅇ 예산과목 : ${pt.budgetLine||'성과급_변동'}\n`;
+      body += `붙임 : ${center.name} ${pt.label} 지급내역(${ctx.ymShort}) 1부.  끝.`;
       $('bn-preview').textContent = body;
     }
-    $('bn-month').addEventListener('change', update);
-    if(center.bonusConfig.headcountEnabled) $('bn-headcount').addEventListener('input', update);
-    $('bn-amount').addEventListener('input', update);
-    $('bn-paydate').addEventListener('input', update);
-    update();
 
+    function shiftMonth(ym, delta){
+      const [y,m] = ym.split('-').map(Number);
+      const d = new Date(y, m-1+delta, 1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }
+
+    $('bn-type').addEventListener('change', async ()=>{ bonusMonth.payoutTypeId = $('bn-type').value; await renderFieldsAndLoad(); });
+    $('bn-month').addEventListener('change', async ()=>{ bonusMonth.ym = $('bn-month').value; await renderFieldsAndLoad(); });
+    $('bn-month-prev').addEventListener('click', async ()=>{ bonusMonth.ym = shiftMonth(bonusMonth.ym,-1); $('bn-month').value = bonusMonth.ym; await renderFieldsAndLoad(); });
+    $('bn-month-next').addEventListener('click', async ()=>{ bonusMonth.ym = shiftMonth(bonusMonth.ym,1); $('bn-month').value = bonusMonth.ym; await renderFieldsAndLoad(); });
     $('bn-copy').addEventListener('click', ()=>copyText($('bn-preview').textContent));
     $('bn-save').addEventListener('click', async ()=>{
-      const ymv = $('bn-month').value;
-      const rec = { amount: $('bn-amount').value===''?null:Number($('bn-amount').value), paydate: $('bn-paydate').value,
-        headcount: center.bonusConfig.headcountEnabled ? ($('bn-headcount').value===''?null:Number($('bn-headcount').value)) : null };
-      await storageSet(`bonus__${center.id}__${ymv}`, rec);
-      toast(`${monthLabel(ymv)} 성과급 지급 기록을 저장했습니다.`);
-      renderBonusHistory(center);
+      const pt = types.find(t=>t.id===bonusMonth.payoutTypeId);
+      const rec = {
+        amount: $('bn-amount').value===''?null:Number($('bn-amount').value),
+        paydate: $('bn-paydate').value,
+        headcount: pt.headcountEnabled ? ($('bn-headcount').value===''?null:Number($('bn-headcount').value)) : null,
+        savedAt: new Date().toISOString(),
+      };
+      await storageSet(`bonus__${center.id}__${pt.id}__${bonusMonth.ym}`, rec);
+      toast(`${monthLabel(bonusMonth.ym)} ${pt.label} 지급 기록을 저장했습니다.`);
+      $('bn-delete').style.display = '';
     });
-    renderBonusHistory(center);
+    $('bn-delete').addEventListener('click', async ()=>{
+      const pt = types.find(t=>t.id===bonusMonth.payoutTypeId);
+      if(!confirm(`${monthLabel(bonusMonth.ym)} ${pt.label} 기록을 삭제할까요?`)) return;
+      await storageDelete(`bonus__${center.id}__${pt.id}__${bonusMonth.ym}`);
+      toast('삭제했습니다.');
+      $('bn-delete').style.display = 'none';
+    });
+
+    await renderFieldsAndLoad();
   }
-  async function renderBonusHistory(center){
-    const hist = await storageList(`bonus__${center.id}__`);
-    $('bn-hist').innerHTML = hist.length ? hist.map(h=>{
-      const ym = h.key.split('__').pop();
-      return `<div class="rt-history-row"><div class="info"><b>${monthLabel(ym)}</b> · ${fmt(h.value.amount)}원 · 지급일 ${h.value.paydate||'-'}</div>
-        <div class="ops"><button class="rt-btn rt-btn-danger rt-btn-sm" data-del="${ym}">삭제</button></div></div>`;
-    }).join('') : `<div class="rt-empty">저장된 지급 이력이 없습니다.</div>`;
-    $('bn-hist').querySelectorAll('[data-del]').forEach(b=>{
-      b.addEventListener('click', async ()=>{
-        if(!confirm(`${monthLabel(b.dataset.del)} 지급 기록을 삭제할까요?`)) return;
-        await storageDelete(`bonus__${center.id}__${b.dataset.del}`);
-        renderBonusHistory(center);
+
+  // ---------- 이미지 모니터링 점검 탭 ----------
+  let weeklyMonth = null; // {centerId, ym}
+  function weekdaysInMonth(ym, weekday){
+    const [y,m] = ym.split('-').map(Number);
+    const days = [];
+    const last = lastDay(ym);
+    for(let d=1; d<=last; d++){
+      const dt = new Date(y, m-1, d);
+      if(dt.getDay()===weekday) days.push(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
+    }
+    return days;
+  }
+  async function renderCenterWeeklyCheck(center){
+    const container = $('center-sub-content');
+    const cfg = center.weeklyCheckConfig || {};
+    const defaultYm = new Date().toISOString().slice(0,7);
+    if(!weeklyMonth || weeklyMonth.centerId!==center.id) weeklyMonth = {centerId:center.id, ym:defaultYm};
+
+    container.innerHTML = `
+      <div class="rt-row">
+        <div class="rt-field" style="max-width:220px;"><label>기준월</label>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="wk-month-prev" style="padding:8px 10px;">◀</button>
+            <input type="month" id="wk-month" value="${weeklyMonth.ym}" style="flex:1;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="wk-month-next" style="padding:8px 10px;">▶</button>
+          </div>
+        </div>
+      </div>
+      <div class="rt-hint">${cfg.desc||''} — 매주 ${['일','월','화','수','목','금','토'][cfg.weekday!==undefined?cfg.weekday:3]}요일 기준으로 자동 생성됩니다.</div>
+      <table class="rt-table" id="wk-table" style="margin-top:10px;">
+        <thead><tr><th>점검일</th><th>점검팀</th><th>대상인원</th><th>점검인원</th><th>취약인원</th><th>모니터링 결과</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="rt-actions" style="margin-top:8px;">
+        <button class="rt-btn rt-btn-ghost rt-btn-sm" id="wk-add-row">+ 행 추가</button>
+      </div>
+      <div class="rt-actions">
+        <button class="rt-btn rt-btn-primary" id="wk-save">이번 달 저장</button>
+        <button class="rt-btn rt-btn-ghost" id="wk-copy">표 복사</button>
+        <button class="rt-btn rt-btn-danger" id="wk-delete" style="display:none;">이 달 기록 삭제</button>
+      </div>
+      <div class="rt-section-title">복사용 미리보기</div>
+      <div class="rt-copy-target" id="wk-preview"></div>
+    `;
+
+    async function loadAndRender(){
+      const existing = await storageGet(`weekly__${center.id}__${weeklyMonth.ym}`);
+      let rowsData;
+      if(existing && existing.rows && existing.rows.length){
+        rowsData = existing.rows;
+      }else{
+        rowsData = weekdaysInMonth(weeklyMonth.ym, cfg.weekday!==undefined?cfg.weekday:3).map(date=>({
+          date, team:cfg.team||'', target:cfg.defaultTarget||0, checked:cfg.defaultChecked||0, vuln:cfg.defaultVuln||0, note:cfg.defaultNote||'특이사항 없음'
+        }));
+      }
+      renderRows(rowsData);
+      $('wk-delete').style.display = existing ? '' : 'none';
+      updatePreview();
+    }
+
+    function renderRows(rowsData){
+      const tbody = document.querySelector('#wk-table tbody');
+      tbody.innerHTML = rowsData.map((r,i)=>`
+        <tr data-i="${i}">
+          <td class="rt-num-input"><input type="date" class="wk-date" value="${r.date}"></td>
+          <td class="rt-num-input"><input type="text" class="wk-team" value="${r.team||''}"></td>
+          <td class="rt-num-input"><input type="number" class="wk-target" value="${r.target}"></td>
+          <td class="rt-num-input"><input type="number" class="wk-checked" value="${r.checked}"></td>
+          <td class="rt-num-input"><input type="number" class="wk-vuln" value="${r.vuln}"></td>
+          <td class="rt-num-input"><input type="text" class="wk-note" value="${r.note||''}"></td>
+          <td><button class="rt-btn rt-btn-danger rt-btn-sm wk-row-del">삭제</button></td>
+        </tr>`).join('');
+      tbody.querySelectorAll('input').forEach(inp=>inp.addEventListener('input', updatePreview));
+      tbody.querySelectorAll('.wk-row-del').forEach(b=>{
+        b.addEventListener('click', ()=>{ b.closest('tr').remove(); updatePreview(); });
       });
+    }
+
+    function readRows(){
+      return [...document.querySelectorAll('#wk-table tbody tr')].map(tr=>({
+        date: tr.querySelector('.wk-date').value,
+        team: tr.querySelector('.wk-team').value,
+        target: Number(tr.querySelector('.wk-target').value||0),
+        checked: Number(tr.querySelector('.wk-checked').value||0),
+        vuln: Number(tr.querySelector('.wk-vuln').value||0),
+        note: tr.querySelector('.wk-note').value,
+      }));
+    }
+
+    function updatePreview(){
+      const rowsData = readRows();
+      const bodyRows = rowsData.map(r=>{
+        const [y,m,d] = r.date.split('-');
+        return `<tr><td>${m}월 ${d}일</td><td>${r.team}</td><td>${r.target}명</td><td>${r.checked}명</td><td>${r.vuln}명</td><td>${r.note}</td></tr>`;
+      }).join('');
+      $('wk-preview').innerHTML = `
+        <div class="rt-copy-section">
+          <div class="rt-copy-section-head"><span>${cfg.title||'모니터링 점검'} — ${monthLabel(weeklyMonth.ym)}</span><button class="rt-mini-copy-btn">이 표만 복사</button></div>
+          <table class="rt-table"><thead><tr><th>점검일</th><th>점검팀</th><th>대상인원</th><th>점검인원</th><th>취약인원</th><th>모니터링 결과</th></tr></thead><tbody>${bodyRows}</tbody></table>
+        </div>`;
+    }
+
+    function shiftMonth(ym, delta){
+      const [y,m] = ym.split('-').map(Number);
+      const d = new Date(y, m-1+delta, 1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }
+
+    $('wk-month').addEventListener('change', async ()=>{ weeklyMonth.ym = $('wk-month').value; await loadAndRender(); });
+    $('wk-month-prev').addEventListener('click', async ()=>{ weeklyMonth.ym = shiftMonth(weeklyMonth.ym,-1); $('wk-month').value = weeklyMonth.ym; await loadAndRender(); });
+    $('wk-month-next').addEventListener('click', async ()=>{ weeklyMonth.ym = shiftMonth(weeklyMonth.ym,1); $('wk-month').value = weeklyMonth.ym; await loadAndRender(); });
+    $('wk-add-row').addEventListener('click', ()=>{
+      const rowsData = readRows();
+      rowsData.push({date:weeklyMonth.ym+'-01', team:cfg.team||'', target:cfg.defaultTarget||0, checked:cfg.defaultChecked||0, vuln:cfg.defaultVuln||0, note:cfg.defaultNote||''});
+      renderRows(rowsData); updatePreview();
     });
+    $('wk-copy').addEventListener('click', ()=>copyHtml($('wk-preview')));
+    $('wk-save').addEventListener('click', async ()=>{
+      const rowsData = readRows();
+      await storageSet(`weekly__${center.id}__${weeklyMonth.ym}`, { rows: rowsData, savedAt: new Date().toISOString() });
+      toast(`${monthLabel(weeklyMonth.ym)} 점검 기록을 저장했습니다.`);
+      $('wk-delete').style.display = '';
+    });
+    $('wk-delete').addEventListener('click', async ()=>{
+      if(!confirm(`${monthLabel(weeklyMonth.ym)} 점검 기록을 삭제할까요?`)) return;
+      await storageDelete(`weekly__${center.id}__${weeklyMonth.ym}`);
+      toast('삭제했습니다.');
+      await loadAndRender();
+    });
+    $('wk-preview').addEventListener('click', (e)=>{
+      const btn = e.target.closest('.rt-mini-copy-btn');
+      if(!btn) return;
+      const table = btn.closest('.rt-copy-section').querySelector('table');
+      if(table) copyHtml(table);
+    });
+
+    await loadAndRender();
+  }
+
+  // ---------- 정기 점검·평가 보고 탭 ----------
+  let reportMonth = null; // {centerId, ym, kindId}
+  const SIMPLE_REPORT_PARAGRAPH = {
+    selfcheck: (center, kind, ctx, v) => {
+      let body = `제 목 : KB손해보험 개인정보처리 수탁자 자체점검 결과 제출(${ctx.ymShort})\n\n`;
+      body += `2. ${kind.targetDefault}의 ${ctx.ymLong} 개인정보처리 점검 결과를 제출합니다.\n`;
+      body += `가. 점검 대상 : ${kind.targetDefault}\n`;
+      body += `나. 점검 일시 : ${v.checkDate || '-'}\n`;
+      body += `다. 점검 방법\n  ㅇ 보안점검 총 ${v.headcount||'-'}명\n  ㅇ 정보보안 개인생활 체크리스트 수기 작성\n  ㅇ 센터 내 ktis 정보보호 체크리스트 자가 점검\n`;
+      body += `라. 점검 결과 : ${v.result||'-'}\n`;
+      if(v.offCount) body += `  ㅇ 점검 당일 휴무자 ${v.offCount}명${v.extraCheckDate?' '+v.extraCheckDate+' 추가 점검 시행':''}\n`;
+      return body;
+    },
+    loaneval: (center, kind, ctx, v) => {
+      let body = `제 목 : KB손해보험 대출상담사 업무수행 평가 보고(${ctx.ymShort})\n\n`;
+      body += `2. ${center.name}의 대출 모집인 업무 수행 규칙과 관련하여 대출 상담사 업무수행 평가를 아래와 같이 시행하여 보고 드립니다.\n`;
+      body += `가. 평가 대상 기간 : ${ctx.periodText}\n`;
+      body += `나. 평가 대상 대출 상담사 인원 : ${v.headcount||'-'}명(채팅상담, 지원팀, 상담팀장 포함)\n`;
+      body += `다. 평가 결과 : ${v.result||'-'}\n`;
+      body += `라. 평가자(대리중개업자) : ${kind.targetDefault}\n`;
+      return body;
+    },
+  };
+  async function renderCenterSimpleReport(center){
+    const container = $('center-sub-content');
+    const cfg = center.simpleReportConfig || {kinds:[]};
+    if(!cfg.kinds.length){ container.innerHTML = `<div class="rt-empty">등록된 보고서 종류가 없습니다.</div>`; return; }
+    const defaultYm = new Date().toISOString().slice(0,7);
+    if(!reportMonth || reportMonth.centerId!==center.id){ reportMonth = {centerId:center.id, ym:defaultYm, kindId:cfg.kinds[0].id}; }
+    if(!cfg.kinds.find(k=>k.id===reportMonth.kindId)) reportMonth.kindId = cfg.kinds[0].id;
+
+    container.innerHTML = `
+      <div class="rt-row">
+        <div class="rt-field" style="max-width:240px;"><label>보고서 종류</label>
+          <select id="rp-kind">${cfg.kinds.map(k=>`<option value="${k.id}" ${k.id===reportMonth.kindId?'selected':''}>${k.label}</option>`).join('')}</select>
+        </div>
+        <div class="rt-field" style="max-width:220px;"><label>기준월</label>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-month-prev" style="padding:8px 10px;">◀</button>
+            <input type="month" id="rp-month" value="${reportMonth.ym}" style="flex:1;">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rp-month-next" style="padding:8px 10px;">▶</button>
+          </div>
+        </div>
+      </div>
+      <div class="rt-row" id="rp-fields-row"></div>
+      <div class="rt-section-title">복사용 미리보기</div>
+      <div class="rt-copy-target" id="rp-preview" style="white-space:pre-wrap;font-size:12.8px;"></div>
+      <div class="rt-actions">
+        <button class="rt-btn rt-btn-primary" id="rp-save">저장</button>
+        <button class="rt-btn rt-btn-ghost" id="rp-copy">문단 복사</button>
+        <button class="rt-btn rt-btn-danger" id="rp-delete" style="display:none;">이 달 기록 삭제</button>
+      </div>
+    `;
+
+    async function renderFieldsAndLoad(){
+      const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
+      const existing = await storageGet(`report__${center.id}__${kind.id}__${reportMonth.ym}`);
+      $('rp-fields-row').innerHTML = kind.fields.map(f=>`
+        <div class="rt-field" style="max-width:200px;"><label>${f.label}</label><input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="rp-f-${f.id}"></div>
+      `).join('');
+      kind.fields.forEach(f=>{
+        const el = $('rp-f-'+f.id);
+        el.value = existing && existing[f.id]!==undefined && existing[f.id]!==null ? existing[f.id] : (f.default!==undefined ? f.default : '');
+        el.addEventListener('input', updatePreview);
+      });
+      $('rp-delete').style.display = existing ? '' : 'none';
+      updatePreview();
+    }
+
+    function updatePreview(){
+      const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
+      const [y,m] = reportMonth.ym.split('-');
+      const ctx = { ymLong:`${y}년 ${Number(m)}월`, ymShort:`${y}년${Number(m)}월`, periodText:`${y}년 ${Number(m)}월 1일 ~ ${y}년 ${Number(m)}월 ${lastDay(reportMonth.ym)}일` };
+      const values = {};
+      kind.fields.forEach(f=>{ values[f.id] = $('rp-f-'+f.id).value; });
+      const builder = SIMPLE_REPORT_PARAGRAPH[kind.id];
+      $('rp-preview').textContent = builder ? builder(center, kind, ctx, values) : JSON.stringify(values);
+    }
+
+    function shiftMonth(ym, delta){
+      const [y,m] = ym.split('-').map(Number);
+      const d = new Date(y, m-1+delta, 1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }
+
+    $('rp-kind').addEventListener('change', async ()=>{ reportMonth.kindId = $('rp-kind').value; await renderFieldsAndLoad(); });
+    $('rp-month').addEventListener('change', async ()=>{ reportMonth.ym = $('rp-month').value; await renderFieldsAndLoad(); });
+    $('rp-month-prev').addEventListener('click', async ()=>{ reportMonth.ym = shiftMonth(reportMonth.ym,-1); $('rp-month').value = reportMonth.ym; await renderFieldsAndLoad(); });
+    $('rp-month-next').addEventListener('click', async ()=>{ reportMonth.ym = shiftMonth(reportMonth.ym,1); $('rp-month').value = reportMonth.ym; await renderFieldsAndLoad(); });
+    $('rp-copy').addEventListener('click', ()=>copyText($('rp-preview').textContent));
+    $('rp-save').addEventListener('click', async ()=>{
+      const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
+      const rec = { savedAt: new Date().toISOString() };
+      kind.fields.forEach(f=>{ rec[f.id] = $('rp-f-'+f.id).value; });
+      await storageSet(`report__${center.id}__${kind.id}__${reportMonth.ym}`, rec);
+      toast(`${monthLabel(reportMonth.ym)} ${kind.label} 기록을 저장했습니다.`);
+      $('rp-delete').style.display = '';
+    });
+    $('rp-delete').addEventListener('click', async ()=>{
+      const kind = cfg.kinds.find(k=>k.id===reportMonth.kindId);
+      if(!confirm(`${monthLabel(reportMonth.ym)} ${kind.label} 기록을 삭제할까요?`)) return;
+      await storageDelete(`report__${center.id}__${kind.id}__${reportMonth.ym}`);
+      toast('삭제했습니다.');
+      $('rp-delete').style.display = 'none';
+    });
+
+    await renderFieldsAndLoad();
   }
 
   // ============================================================
@@ -1208,8 +1644,10 @@ ${fieldDesc}
     const c = existing ? JSON.parse(JSON.stringify(existing)) : {
       id: uid(), name:'', type:'billing',
       config:{ rowLabels:[''], periodRule:'calendar', headcountEnabled:false, hasAuto:false, autoLabel:'자동이체 전환 도급비', unitPriceDefault:15800, hasContract:false, contractAmount:null },
-      bonusEnabled:false, bonusConfig:{ headcountEnabled:false, targetText:'{name} 소속직원', fundText:'{ymLong} 청구 금액 내 지급', budgetLine:'성과급_변동' }
+      bonusEnabled:false, payoutTypes:[], weeklyCheckEnabled:false, simpleReportEnabled:false,
     };
+    const DEFAULT_WEEKLY_CONFIG = { title:'모니터링 점검', desc:'', weekday:3, team:'', defaultTarget:0, defaultChecked:0, defaultVuln:0, defaultNote:'특이사항 없음' };
+    const DEFAULT_SIMPLEREPORT_CONFIG = { kinds:[ { id:'report1', label:'정기 보고', targetLabel:'대상', targetDefault:'', fields:[ {id:'result', label:'결과', type:'text', default:'특이사항 없음'} ] } ] };
     // 실적형(perf) 센터는 config에 rowLabels가 없으므로, 모달 표시용 안전 기본값을 보강 (실제 c.config는 건드리지 않음)
     const billCfg = Object.assign({
       rowLabels:[''], periodRule:'calendar', headcountEnabled:false, hasAuto:false,
@@ -1250,17 +1688,19 @@ ${fieldDesc}
             <div class="rt-field" id="m-unitprice-wrap" style="display:${billCfg.hasAuto?'':'none'};"><label>건당 단가 기본값 (원)</label><input type="number" id="m-unitprice" value="${billCfg.unitPriceDefault||15800}"></div>
           </div>
 
-          <div class="rt-modal-section-title">③ 성과급 지급 기능</div>
-          <div class="rt-checkbox-row"><input type="checkbox" id="m-bonus" ${c.bonusEnabled?'checked':''}><label for="m-bonus">이 센터에 성과급 지급 기능 사용</label></div>
-          <div class="rt-hint">켜면 센터 상세화면에 "성과급" 탭이 추가되어, 지급금액·지급일자를 입력하면 지급 안내문을 자동 생성·저장할 수 있습니다. 이니텍처럼 성과급 지급이 없는 센터는 꺼두세요.</div>
+          <div class="rt-modal-section-title">③ 성과급 / 포상금 지급 기능</div>
+          <div class="rt-checkbox-row"><input type="checkbox" id="m-bonus" ${c.bonusEnabled?'checked':''}><label for="m-bonus">이 센터에 지급 기능 사용</label></div>
+          <div class="rt-hint">켜면 센터 상세화면에 "성과급" 탭이 추가됩니다. 성과급·포상금처럼 지급유형을 여러 개 등록할 수 있습니다.</div>
           <div id="m-bonus-fields" style="display:${c.bonusEnabled?'':'none'}; margin-top:8px;">
-            <div class="rt-field"><label>지급대상 문구</label><input type="text" id="m-bonus-target" value="${c.bonusConfig.targetText||''}"></div>
-            <div class="rt-hint">안내문 "가. 지급대상 : ○○○" 자리에 그대로 들어갑니다.</div>
-            <div class="rt-field"><label>지급재원 문구</label><input type="text" id="m-bonus-fund" value="${c.bonusConfig.fundText||''}"></div>
-            <div class="rt-hint">"나. 지급재원 : ○○○" 자리에 들어갑니다. {ymLong}을 넣으면 "2026년 7월"처럼 기준월로 자동 치환됩니다.</div>
-            <div class="rt-checkbox-row"><input type="checkbox" id="m-bonus-headcount" ${c.bonusConfig.headcountEnabled?'checked':''}><label for="m-bonus-headcount">지급인원 표시</label></div>
-            <div class="rt-hint">안내문에 "지급인원 : N명" 줄을 추가할지 여부입니다. (평택처럼 인원별 지급 시 사용)</div>
+            <div id="m-payout-list"></div>
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="m-payout-add" style="margin-top:4px;">+ 지급유형 추가</button>
           </div>
+
+          <div class="rt-modal-section-title">④ 추가 기능</div>
+          <div class="rt-checkbox-row"><input type="checkbox" id="m-weekly" ${c.weeklyCheckEnabled?'checked':''}><label for="m-weekly">이미지 모니터링 점검 탭 사용</label></div>
+          <div class="rt-hint">매주 지정 요일 기준으로 점검표를 자동 생성하는 탭입니다. (예: KB부천 개인정보 이미지파일 점검)</div>
+          <div class="rt-checkbox-row"><input type="checkbox" id="m-simplereport" ${c.simpleReportEnabled?'checked':''}><label for="m-simplereport">정기 점검·평가 보고 탭 사용</label></div>
+          <div class="rt-hint">자체점검·업무평가처럼 단일 값으로 채우는 정기 보고서 탭입니다. (예: KB부천 자체점검/대출상담사평가)</div>
 
           <div class="rt-actions">
             <button class="rt-btn rt-btn-primary" id="m-save">저장</button>
@@ -1289,6 +1729,43 @@ ${fieldDesc}
     $('m-cancel').addEventListener('click', ()=>{ root.innerHTML=''; });
     $('modal-bg').addEventListener('click', (e)=>{ if(e.target.id==='modal-bg') root.innerHTML=''; });
 
+    // ---- 지급유형(성과급/포상금) 반복 목록 ----
+    let modalPayoutTypes = (c.payoutTypes||[]).map(p=>Object.assign({},p));
+    function renderPayoutList(){
+      $('m-payout-list').innerHTML = modalPayoutTypes.map((p,i)=>`
+        <div style="border:1px solid var(--line);border-radius:5px;padding:10px;margin-bottom:8px;">
+          <div class="rt-row" style="margin-bottom:6px;align-items:flex-end;">
+            <div class="rt-field" style="max-width:170px;"><label>유형 이름</label><input type="text" class="mp-label" data-i="${i}" value="${p.label||''}"></div>
+            <div class="rt-field" style="max-width:110px;"><label>지급일(기본, 매월)</label><input type="number" class="mp-payday" data-i="${i}" value="${p.payDay||10}" min="1" max="28"></div>
+            <button type="button" class="rt-btn rt-btn-danger rt-btn-sm mp-del" data-i="${i}">삭제</button>
+          </div>
+          <div class="rt-field"><label>지급대상 문구</label><input type="text" class="mp-target" data-i="${i}" value="${p.targetText||''}"></div>
+          <div class="rt-field"><label>지급재원 문구 ({ymLong} 사용 가능)</label><input type="text" class="mp-fund" data-i="${i}" value="${p.fundText||''}"></div>
+          <div class="rt-field"><label>예산과목</label><input type="text" class="mp-budget" data-i="${i}" value="${p.budgetLine||'성과급_변동'}"></div>
+          <div class="rt-checkbox-row"><input type="checkbox" class="mp-headcount" data-i="${i}" ${p.headcountEnabled?'checked':''}><label>지급인원 표시</label></div>
+        </div>
+      `).join('') || `<div class="rt-hint">등록된 지급유형이 없습니다. 아래 "+ 지급유형 추가"를 눌러주세요.</div>`;
+      $('m-payout-list').querySelectorAll('input').forEach(inp=>{
+        inp.addEventListener('input', ()=>{
+          const i = Number(inp.dataset.i);
+          if(inp.classList.contains('mp-label')) modalPayoutTypes[i].label = inp.value;
+          else if(inp.classList.contains('mp-payday')) modalPayoutTypes[i].payDay = Number(inp.value||10);
+          else if(inp.classList.contains('mp-target')) modalPayoutTypes[i].targetText = inp.value;
+          else if(inp.classList.contains('mp-fund')) modalPayoutTypes[i].fundText = inp.value;
+          else if(inp.classList.contains('mp-budget')) modalPayoutTypes[i].budgetLine = inp.value;
+          else if(inp.classList.contains('mp-headcount')) modalPayoutTypes[i].headcountEnabled = inp.checked;
+        });
+      });
+      $('m-payout-list').querySelectorAll('.mp-del').forEach(b=>{
+        b.addEventListener('click', ()=>{ modalPayoutTypes.splice(Number(b.dataset.i),1); renderPayoutList(); });
+      });
+    }
+    renderPayoutList();
+    $('m-payout-add').addEventListener('click', ()=>{
+      modalPayoutTypes.push({ id:uid(), label:'새 지급유형', targetText:'{name} 소속직원', fundText:'{ymLong} 청구 금액 내 지급', budgetLine:'성과급_변동', headcountEnabled:false, payDay:10 });
+      renderPayoutList();
+    });
+
     $('m-save').addEventListener('click', async ()=>{
       const name = $('m-name').value.trim();
       if(!name){ toast('센터 이름을 입력하세요.'); return; }
@@ -1301,13 +1778,10 @@ ${fieldDesc}
         }
       }
       let config = {};
-      let bonusEnabled = $('m-bonus').checked;
-      let bonusConfig = {
-        targetText: $('m-bonus-target').value || '{name} 소속직원',
-        fundText: $('m-bonus-fund').value || '{ymLong} 청구 금액 내 지급',
-        headcountEnabled: $('m-bonus-headcount').checked,
-        budgetLine: '성과급_변동',
-      };
+      const bonusEnabled = $('m-bonus').checked;
+      const payoutTypes = bonusEnabled ? modalPayoutTypes : [];
+      const weeklyCheckEnabled = $('m-weekly').checked;
+      const simpleReportEnabled = $('m-simplereport').checked;
       if(type==='billing'){
         const rowCount = Number($('m-rowcount').value);
         const rowLabels = [$('m-row0').value.trim() || '청구항목1'];
@@ -1318,10 +1792,13 @@ ${fieldDesc}
           hasAuto: $('m-hasauto').checked, autoLabel:'자동이체 전환 도급비', unitPriceDefault: Number($('m-unitprice').value||15800),
         };
       }
+      const patch = { name, type, config, bonusEnabled, payoutTypes, weeklyCheckEnabled, simpleReportEnabled };
+      if(weeklyCheckEnabled && !c.weeklyCheckConfig) patch.weeklyCheckConfig = DEFAULT_WEEKLY_CONFIG;
+      if(simpleReportEnabled && !c.simpleReportConfig) patch.simpleReportConfig = DEFAULT_SIMPLEREPORT_CONFIG;
       if(isEdit){
-        Object.assign(existing, { name, type, config, bonusEnabled, bonusConfig });
+        Object.assign(existing, patch);
       }else{
-        centers.push({ id:c.id, name, type, config, bonusEnabled, bonusConfig });
+        centers.push(Object.assign({ id:c.id }, patch));
       }
       await saveCenters();
       root.innerHTML = '';
