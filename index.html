@@ -148,6 +148,7 @@
     <div class="rt-nav-item" data-view="backup" id="nav-backup">백업 / 복원</div>
     <div class="rt-center-list" id="side-centers"></div>
     <button class="rt-add-center-btn" id="btn-add-center">+ 센터 추가</button>
+    <button class="rt-add-center-btn" id="btn-customize" style="margin-top:-8px;">+ 커스터마이징</button>
   </aside>
   <main class="rt-main" id="rt-main"></main>
 </div>
@@ -628,6 +629,114 @@ ${fieldDesc}
       try{ data = JSON.parse(text); }catch(e){ toast('JSON 파일을 읽을 수 없습니다.'); return; }
       await restoreFromData(data);
     });
+  }
+
+  // ============================================================
+  // 커스터마이징 (사이트 링크 관리 + 가이드)
+  // ============================================================
+  const DEFAULT_CUSTOM_LINKS = [
+    { id: uid(), name: '이 채팅방 (Claude 대화)', value: '' },
+    { id: uid(), name: 'GitHub 저장소 (index.html)', value: 'https://github.com/20oioi20-byte/kkangbi-report2/blob/main/index.html' },
+    { id: uid(), name: 'Supabase 대시보드', value: `https://supabase.com/dashboard/project/${SB_URL.replace('https://','').split('.')[0]}` },
+    { id: uid(), name: 'Vercel 대시보드', value: 'https://vercel.com/dashboard' },
+    { id: uid(), name: 'Supabase Anon Key (공개용)', value: SB_KEY },
+  ];
+  const DEFAULT_CUSTOM_GUIDE =
+`1. 기능 수정이 필요할 때 → 위 "이 채팅방" 링크로 들어가 Claude에게 원하는 수정을 요청합니다.
+2. Claude가 만들어준 index.html 파일을 다운로드합니다.
+3. 위 "GitHub 저장소" 링크로 들어가 index.html 옆 연필(edit) 아이콘 클릭 → 기존 내용을 지우고 새 파일 내용을 붙여넣기 → Commit changes.
+4. Vercel이 커밋을 자동 감지해 1~2분 내로 재배포합니다. 위 "Vercel 대시보드"에서 배포 상태를 확인할 수 있습니다.
+5. "Supabase 대시보드"에서는 rpt_kv 테이블(저장 데이터), Edge Functions(rpt-ai-parse, AI 자동입력용), Secrets(ANTHROPIC_API_KEY)를 관리합니다.
+6. anon key는 공개되어도 되는 키입니다(Supabase 설계상 anon key는 공개용). 다만 새 Supabase 프로젝트로 옮기면 이 키도 함께 교체해야 합니다.`;
+
+  async function loadCustomLinks(){
+    const saved = await storageGet('customLinks');
+    if(saved && saved.length) return saved;
+    await storageSet('customLinks', DEFAULT_CUSTOM_LINKS);
+    return DEFAULT_CUSTOM_LINKS;
+  }
+  async function loadCustomGuide(){
+    const saved = await storageGet('customGuide');
+    if(saved!==null && saved!==undefined) return saved;
+    await storageSet('customGuide', DEFAULT_CUSTOM_GUIDE);
+    return DEFAULT_CUSTOM_GUIDE;
+  }
+
+  async function renderCustomizeView(){
+    const main = $('rt-main');
+    let links = await loadCustomLinks();
+    const guide = await loadCustomGuide();
+
+    main.innerHTML = `
+      <div class="rt-main-header"><div><h2>커스터마이징</h2><div class="desc">이 앱의 코드를 수정·배포할 때 필요한 링크와 방법을 한곳에 모아둡니다.</div></div></div>
+
+      <div class="rt-section-title">① 바로가기 링크</div>
+      <div id="cust-link-list"></div>
+      <div class="rt-actions" style="margin-top:8px;">
+        <button class="rt-btn rt-btn-ghost rt-btn-sm" id="cust-add-link">+ 링크 추가</button>
+      </div>
+
+      <div class="rt-section-title">② 커스터마이징 방법 (요약)</div>
+      <textarea id="cust-guide" class="rt-comment" style="min-height:180px;">${guide}</textarea>
+      <div class="rt-actions" style="margin-top:8px;">
+        <button class="rt-btn rt-btn-primary" id="cust-save-guide">가이드 저장</button>
+        <button class="rt-btn rt-btn-ghost" id="cust-copy-guide">가이드 복사</button>
+      </div>
+    `;
+
+    function renderLinkList(){
+      $('cust-link-list').innerHTML = links.map((l,i)=>`
+        <div class="rt-history-row" data-i="${i}">
+          <div class="info" style="flex:1;display:flex;gap:8px;align-items:center;">
+            <input type="text" class="cl-name" data-i="${i}" value="${(l.name||'').replace(/"/g,'&quot;')}" style="border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:12.6px;font-weight:700;width:220px;">
+            <input type="text" class="cl-value" data-i="${i}" value="${(l.value||'').replace(/"/g,'&quot;')}" style="border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:12.6px;flex:1;font-family:monospace;">
+          </div>
+          <div class="ops">
+            <button class="rt-btn rt-btn-ghost rt-btn-sm cl-open" data-i="${i}">열기</button>
+            <button class="rt-btn rt-btn-ghost rt-btn-sm cl-copy" data-i="${i}">복사</button>
+            <button class="rt-btn rt-btn-danger rt-btn-sm cl-del" data-i="${i}">삭제</button>
+          </div>
+        </div>
+      `).join('') || `<div class="rt-empty">등록된 링크가 없습니다.</div>`;
+
+      $('cust-link-list').querySelectorAll('.cl-name, .cl-value').forEach(inp=>{
+        inp.addEventListener('change', async ()=>{
+          const i = Number(inp.dataset.i);
+          if(inp.classList.contains('cl-name')) links[i].name = inp.value;
+          else links[i].value = inp.value;
+          await storageSet('customLinks', links);
+        });
+      });
+      $('cust-link-list').querySelectorAll('.cl-open').forEach(b=>{
+        b.addEventListener('click', ()=>{
+          const v = links[Number(b.dataset.i)].value;
+          if(v && /^https?:\/\//.test(v)) window.open(v, '_blank');
+          else toast('열 수 있는 URL이 아닙니다. (키/값은 복사해서 사용하세요)');
+        });
+      });
+      $('cust-link-list').querySelectorAll('.cl-copy').forEach(b=>{
+        b.addEventListener('click', ()=>{ copyText(links[Number(b.dataset.i)].value||''); });
+      });
+      $('cust-link-list').querySelectorAll('.cl-del').forEach(b=>{
+        b.addEventListener('click', async ()=>{
+          links.splice(Number(b.dataset.i),1);
+          await storageSet('customLinks', links);
+          renderLinkList();
+        });
+      });
+    }
+    renderLinkList();
+
+    $('cust-add-link').addEventListener('click', async ()=>{
+      links.push({ id: uid(), name:'새 링크', value:'' });
+      await storageSet('customLinks', links);
+      renderLinkList();
+    });
+    $('cust-save-guide').addEventListener('click', async ()=>{
+      await storageSet('customGuide', $('cust-guide').value);
+      toast('가이드를 저장했습니다.');
+    });
+    $('cust-copy-guide').addEventListener('click', ()=>copyText($('cust-guide').value));
   }
 
   // ============================================================
@@ -1815,12 +1924,14 @@ ${fieldDesc}
     renderSidebar();
     if(currentView.type==='all') await renderAllView();
     else if(currentView.type==='backup') renderBackupView();
+    else if(currentView.type==='customize') await renderCustomizeView();
     else await renderCenterView();
   }
 
   $('nav-all').addEventListener('click', ()=>{ currentView = {type:'all'}; renderAll(); });
   $('nav-backup').addEventListener('click', ()=>{ currentView = {type:'backup'}; renderAll(); });
   $('btn-add-center').addEventListener('click', ()=>openCenterModal(null));
+  $('btn-customize').addEventListener('click', ()=>{ currentView = {type:'customize'}; renderAll(); });
   $('side-search').addEventListener('input', ()=>{ searchQuery = $('side-search').value; renderAll(); });
 
   (async function init(){
