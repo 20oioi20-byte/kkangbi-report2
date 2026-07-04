@@ -994,34 +994,150 @@ ${fieldDesc}
     return center.customInputLabel || (center.type==='billing' ? '수수료청구' : '입력');
   }
 
+  // 센터의 모든 관리 가능한 탭 목록 (전체이력 제외) — 탭관리/이름변경에서 공용으로 사용
+  function getAllTabDefs(center){
+    const defs = [ { key:'input', label:inputTabLabel(center), hidden:!!center.inputHidden, deletable:false } ];
+    (center.payoutTypes||[]).forEach(pt=>{ defs.push({ key:`bonus:${pt.id}`, label:pt.label, hidden:!!pt.hidden, deletable:true }); });
+    if(center.weeklyCheckEnabled){
+      defs.push({ key:'weekly', label:(center.weeklyCheckConfig&&center.weeklyCheckConfig.tabLabel)||'점검입력', hidden:!!center.weeklyHidden, deletable:true });
+    }
+    if(center.simpleReportEnabled){
+      ((center.simpleReportConfig&&center.simpleReportConfig.kinds)||[]).forEach(k=>{ defs.push({ key:`report:${k.id}`, label:k.tabLabel||k.label, hidden:!!k.hidden, deletable:true }); });
+    }
+    if(center.eventLogEnabled){
+      ((center.eventLogConfig&&center.eventLogConfig.kinds)||[]).forEach(k=>{ defs.push({ key:`eventlog:${k.id}`, label:k.tabLabel||k.label, hidden:!!k.hidden, deletable:true }); });
+    }
+    return defs;
+  }
+  function renameTab(center, subKey, newLabel){
+    if(!newLabel || !newLabel.trim()) return;
+    newLabel = newLabel.trim();
+    if(subKey==='input') center.customInputLabel = newLabel;
+    else if(subKey.startsWith('bonus:')){ const pt=(center.payoutTypes||[]).find(p=>p.id===subKey.slice(6)); if(pt) pt.label=newLabel; }
+    else if(subKey==='weekly'){ center.weeklyCheckConfig = center.weeklyCheckConfig||{}; center.weeklyCheckConfig.tabLabel=newLabel; }
+    else if(subKey.startsWith('report:')){ const k=(center.simpleReportConfig&&center.simpleReportConfig.kinds||[]).find(x=>x.id===subKey.slice(7)); if(k) k.tabLabel=newLabel; }
+    else if(subKey.startsWith('eventlog:')){ const k=(center.eventLogConfig&&center.eventLogConfig.kinds||[]).find(x=>x.id===subKey.slice(9)); if(k) k.tabLabel=newLabel; }
+  }
+  function setTabHidden(center, subKey, hidden){
+    if(subKey==='input') center.inputHidden = hidden;
+    else if(subKey.startsWith('bonus:')){ const pt=(center.payoutTypes||[]).find(p=>p.id===subKey.slice(6)); if(pt) pt.hidden=hidden; }
+    else if(subKey==='weekly'){ center.weeklyHidden = hidden; }
+    else if(subKey.startsWith('report:')){ const k=(center.simpleReportConfig&&center.simpleReportConfig.kinds||[]).find(x=>x.id===subKey.slice(7)); if(k) k.hidden=hidden; }
+    else if(subKey.startsWith('eventlog:')){ const k=(center.eventLogConfig&&center.eventLogConfig.kinds||[]).find(x=>x.id===subKey.slice(9)); if(k) k.hidden=hidden; }
+  }
+  function deleteTabDef(center, subKey){
+    if(subKey.startsWith('bonus:')){ center.payoutTypes = (center.payoutTypes||[]).filter(p=>p.id!==subKey.slice(6)); }
+    else if(subKey==='weekly'){ center.weeklyCheckEnabled = false; }
+    else if(subKey.startsWith('report:')){ if(center.simpleReportConfig) center.simpleReportConfig.kinds = (center.simpleReportConfig.kinds||[]).filter(k=>k.id!==subKey.slice(7)); }
+    else if(subKey.startsWith('eventlog:')){ if(center.eventLogConfig) center.eventLogConfig.kinds = (center.eventLogConfig.kinds||[]).filter(k=>k.id!==subKey.slice(9)); }
+  }
+
+  function openTabManageModal(center){
+    const root = $('rt-modal-root');
+    let showHidden = false;
+    function render(){
+      const defs = getAllTabDefs(center);
+      const visible = defs.filter(d=>!d.hidden);
+      const hidden = defs.filter(d=>d.hidden);
+      root.innerHTML = `
+        <div class="rt-modal-backdrop" id="tabmgr-bg">
+          <div class="rt-modal">
+            <h3>탭 관리 — ${center.name}</h3>
+            <div class="rt-hint">이름은 탭을 더블클릭하면 바로 수정됩니다. 여기서는 숨기기/삭제만 관리합니다.</div>
+            <div class="rt-modal-section-title">표시 중인 탭</div>
+            ${visible.map(d=>`
+              <div class="rt-history-row">
+                <div class="info">${d.label}</div>
+                <div class="ops">
+                  <label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" class="tabmgr-hide" data-key="${d.key}"> 숨김</label>
+                  ${d.deletable?`<button class="rt-btn rt-btn-danger rt-btn-sm tabmgr-del" data-key="${d.key}">삭제</button>`:''}
+                </div>
+              </div>`).join('') || `<div class="rt-empty">표시 중인 탭이 없습니다.</div>`}
+
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="tabmgr-toggle-hidden" style="margin-top:10px;">숨긴 항목 보기 (${hidden.length})</button>
+            <div id="tabmgr-hidden-list" style="display:${showHidden?'':'none'}; margin-top:8px;">
+              ${hidden.map(d=>`
+                <div class="rt-history-row">
+                  <div class="info">${d.label} <span style="color:var(--sub);">(숨김)</span></div>
+                  <div class="ops"><label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" class="tabmgr-unhide" data-key="${d.key}" checked> 숨김 해제</label></div>
+                </div>`).join('') || `<div class="rt-empty">숨긴 탭이 없습니다.</div>`}
+            </div>
+
+            <div class="rt-actions">
+              <button class="rt-btn rt-btn-ghost" id="tabmgr-close">닫기</button>
+            </div>
+          </div>
+        </div>`;
+
+      $('tabmgr-toggle-hidden').addEventListener('click', ()=>{ showHidden = !showHidden; render(); });
+      $('tabmgr-close').addEventListener('click', async ()=>{ root.innerHTML=''; await saveCenters(); renderAll(); });
+      root.querySelectorAll('.tabmgr-hide').forEach(cb=>{
+        cb.addEventListener('change', ()=>{ setTabHidden(center, cb.dataset.key, cb.checked); render(); });
+      });
+      root.querySelectorAll('.tabmgr-del').forEach(b=>{
+        b.addEventListener('click', ()=>{
+          if(!confirm('이 탭을 삭제할까요? 이전에 저장된 데이터는 남아있지만 탭 목록에서 완전히 제거됩니다.')) return;
+          deleteTabDef(center, b.dataset.key);
+          render();
+        });
+      });
+      root.querySelectorAll('.tabmgr-unhide').forEach(cb=>{
+        cb.addEventListener('change', ()=>{ if(!cb.checked) setTabHidden(center, cb.dataset.key, false); render(); });
+      });
+      $('tabmgr-bg').addEventListener('click', async (e)=>{ if(e.target.id==='tabmgr-bg'){ root.innerHTML=''; await saveCenters(); renderAll(); } });
+    }
+    render();
+  }
+
   async function renderCenterView(){
     const center = getCenter(currentView.id);
     if(!center){ currentView = {type:'all'}; return renderAll(); }
     const main = $('rt-main');
-    const subtabs = [['allhistory','전체이력'], ['input', inputTabLabel(center)]];
-    (center.payoutTypes||[]).forEach(pt=>{ subtabs.push([`bonus:${pt.id}`, pt.label]); });
-    if(center.weeklyCheckEnabled) subtabs.push(['weekly', (center.weeklyCheckConfig&&center.weeklyCheckConfig.tabLabel)||'점검입력']);
-    if(center.simpleReportEnabled){
-      ((center.simpleReportConfig&&center.simpleReportConfig.kinds)||[]).forEach(k=>{ subtabs.push([`report:${k.id}`, k.tabLabel||k.label]); });
-    }
-    if(center.eventLogEnabled){
-      ((center.eventLogConfig&&center.eventLogConfig.kinds)||[]).forEach(k=>{ subtabs.push([`eventlog:${k.id}`, k.tabLabel||k.label]); });
-    }
+    const allDefs = getAllTabDefs(center);
+    const subtabs = [['allhistory','전체이력']].concat(allDefs.filter(d=>!d.hidden).map(d=>[d.key, d.label]));
     if(!currentView.sub) currentView.sub = 'input';
+    if(currentView.sub!=='allhistory' && !subtabs.find(([k])=>k===currentView.sub)) currentView.sub = 'input';
     main.innerHTML = `
       <div class="rt-main-header">
         <div><h2>${center.name}</h2><div class="desc">${TYPE_LABEL[center.type]}${center.type==='billing'?' · '+center.config.rowLabels.join(' / '):''}</div></div>
         <div class="rt-actions" style="margin-top:0;">
+          <button class="rt-btn rt-btn-ghost rt-btn-sm" id="btn-manage-tabs">탭 관리</button>
           <button class="rt-btn rt-btn-ghost rt-btn-sm" id="btn-edit-center">센터 설정</button>
           <button class="rt-btn rt-btn-danger rt-btn-sm" id="btn-delete-center">센터 삭제</button>
         </div>
       </div>
-      <div class="rt-subtabs">${subtabs.map(([k,l])=>`<div class="rt-subtab ${currentView.sub===k?'active':''}" data-sub="${k}">${l}</div>`).join('')}</div>
+      <div class="rt-subtabs">${subtabs.map(([k,l])=>`<div class="rt-subtab ${currentView.sub===k?'active':''}" data-sub="${k}" title="더블클릭하면 이름을 수정할 수 있습니다">${l}</div>`).join('')}</div>
       <div id="center-sub-content"></div>
     `;
     main.querySelectorAll('.rt-subtab').forEach(el=>{
       el.addEventListener('click', ()=>{ currentView.sub = el.dataset.sub; renderAll(); });
+      if(el.dataset.sub!=='allhistory'){
+        el.addEventListener('dblclick', (e)=>{
+          e.stopPropagation();
+          const subKey = el.dataset.sub;
+          const currentLabel = el.textContent;
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.value = currentLabel;
+          input.style.cssText = 'font-size:12.8px;font-weight:700;width:100%;border:1px solid var(--navy-light);border-radius:3px;padding:2px 4px;';
+          el.textContent = '';
+          el.appendChild(input);
+          input.focus();
+          input.select();
+          const commit = async ()=>{
+            renameTab(center, subKey, input.value);
+            await saveCenters();
+            renderAll();
+          };
+          input.addEventListener('blur', commit);
+          input.addEventListener('keydown', (ev)=>{
+            if(ev.key==='Enter'){ ev.preventDefault(); input.blur(); }
+            if(ev.key==='Escape'){ ev.preventDefault(); input.removeEventListener('blur', commit); renderAll(); }
+          });
+        });
+      }
     });
+    $('btn-manage-tabs').addEventListener('click', ()=>openTabManageModal(center));
     $('btn-edit-center').addEventListener('click', ()=>openCenterModal(center));
     $('btn-delete-center').addEventListener('click', async ()=>{
       if(!confirm(`'${center.name}' 센터를 삭제할까요? 저장된 기록은 남아있지만 목록에서 사라집니다.`)) return;
